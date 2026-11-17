@@ -1,0 +1,58 @@
+name: harness
+services:
+  app:
+    build:
+      context: .
+      target: development
+    ports:
+      - "127.0.0.1:4318:4318"
+    environment:
+      NODE_ENV: development
+      DEV_AUTH: "true"
+      APP_ORIGIN: http://localhost:4318
+      DATABASE_URL: postgresql://harness:${POSTGRES_PASSWORD:-harness-local-only}@postgres:5432/harness
+      REDIS_URL: redis://redis:6379
+      HARNESS_DATA_DIR: /app/.local
+      HARNESS_MASTER_KEY: ${HARNESS_MASTER_KEY:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
+      EMAIL_SERVER: ${EMAIL_SERVER:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      ALLOW_LOCAL_MODELS: "false"
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - harness-local:/app/.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    init: true
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-harness-local-only}
+      POSTGRES_DB: harness
+    volumes:
+      - harness-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d harness"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - harness-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  harness-local:
+  harness-postgres:
+  harness-redis:

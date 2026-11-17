@@ -1,0 +1,15 @@
+.git
+.github
+.next
+node_modules
+.local
+.env
+.env.*
+!.env.example
+test-results
+playwright-report
+coverage
+*.tsbuildinfo
+.DS_Store
+dist/downloads
+.openai

@@ -1,0 +1,16 @@
+node_modules/
+.local/
+.DS_Store
+*.tar.gz
+!dist/downloads/*
+.next/
+.env
+.env.*
+!.env.example
+test-results/
+playwright-report/
+*.tsbuildinfo
+coverage/
+.next-e2e/
+.sites-runtime/
+dist/downloads/

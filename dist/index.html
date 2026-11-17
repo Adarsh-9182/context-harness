@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f9fb">
+  <meta name="description" content="Give your AI the right context. Create personal roles with knowledge, workflows and a workspace of their own.">
+  <title>Harness — Your AI, in its element</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div id="app"><div class="initial-loading">Preparing your workspace…</div></div>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+  <input type="file" id="knowledge-file" accept=".txt,.md,.csv,.json,.html,.css,.js,.ts,.py" multiple hidden>
+</body>
+</html>

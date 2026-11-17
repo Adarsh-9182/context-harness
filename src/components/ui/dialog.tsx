@@ -18,11 +18,22 @@ export function Dialog({
   children: React.ReactNode;
   className?: string;
 }) {
+  const contentRef = React.useRef<HTMLDivElement>(null);
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
         <D.Overlay className="dialog-overlay" />
-        <D.Content className={cn("dialog-content", className)}>
+        <D.Content
+          ref={contentRef}
+          className={cn("dialog-content", className)}
+          onOpenAutoFocus={(event) => {
+            const target = contentRef.current?.querySelector<HTMLElement>("[data-dialog-autofocus]");
+            if (target) {
+              event.preventDefault();
+              target.focus();
+            }
+          }}
+        >
           <div className="dialog-heading">
             <div>
               <D.Title>{title}</D.Title>

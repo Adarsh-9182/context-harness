@@ -1470,7 +1470,7 @@ export function HarnessApp() {
           <div className="search-field">
             <Search size={17} />
             <input
-              autoFocus
+              data-dialog-autofocus
               aria-label="Search conversations"
               placeholder="Find a conversation…"
               value={query}

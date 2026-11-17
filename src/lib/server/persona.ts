@@ -28,7 +28,7 @@ export const definitionSchema = z
 export type PersonaDefinition = z.infer<typeof definitionSchema>;
 
 const UNSAFE_ROLE =
-  /(?:ignore|override|reveal|bypass|disable|forget)\b.{0,50}\b(?:instruction|safety|system|rule|guardrail)|jailbreak|\bdan\b|unrestricted|uncensored|no\s+(?:ethics|rules|limits)|(?:terrorist|fraudster|child\s+sexual|sexual\s+minor|hitman|assassin)|(?:create|build|write|teach)\b.{0,30}\b(?:ransomware|malware|bomb|explosive)|system\s*prompt|developer\s*message|<\/?(?:system|instruction)|```/i;
+  /(?:ignore|override|reveal|bypass|disable|forget)\b.{0,50}\b(?:instruction|prompt|safety|system|rule|guardrail|restriction|policy)|jailbreak|\bdan\b|unrestricted|uncensored|no\s+(?:ethics|rules|limits)|(?:terrorist|fraudster|child\s+sexual|sexual\s+minor|hitman|assassin)|(?:create|build|write|teach)\b.{0,30}\b(?:ransomware|malware|bomb|explosive)|system\s*prompt|developer\s*message|<\/?(?:system|instruction)|```/i;
 export function assertSafeRole(role: string, focus = "") {
   if (
     /[\r\n\u0000-\u001f]/.test(role) ||

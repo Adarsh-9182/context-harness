@@ -14,3 +14,4 @@ coverage/
 .next-e2e/
 .sites-runtime/
 dist/downloads/
+next-env.d.ts

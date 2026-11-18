@@ -1,9 +1,12 @@
-import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, it, expect, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
   leak: false,
   pause: false,
+  pauseAfterText: false,
+  failure: "" as "" | "before" | "after",
+  abortOnEnd: null as null | (() => void),
   resume: null as null | (() => void),
   modelName: "test-chat-model",
 }));
@@ -52,10 +55,16 @@ vi.mock("../src/lib/providers", () => ({
       } else if (mocks.leak) {
         yield { type: "text", text: system };
       } else {
+        if (mocks.failure === "before") throw Error("Upstream failed before text.");
         if (mocks.pause)
           await new Promise<void>((resolve) => {
             mocks.resume = resolve;
           });
+        if (mocks.failure === "after" || mocks.pauseAfterText) {
+          yield { type: "text", text: "This is a safe draft replacement, which has not been committed. ".repeat(5) };
+          if (mocks.failure === "after") throw Error("Upstream failed after text.");
+          await new Promise<void>((resolve) => { mocks.resume = resolve; });
+        }
         yield {
           type: "text",
           text: "A prime number has exactly two positive divisors. ",
@@ -67,6 +76,7 @@ vi.mock("../src/lib/providers", () => ({
         yield { type: "usage", inputTokens: 80, outputTokens: 30 };
       }
       yield { type: "done" };
+      if (!system.includes("You compile safe")) mocks.abortOnEnd?.();
     },
   }),
 }));
@@ -81,6 +91,8 @@ import {
 } from "../src/app/api/conversations/[id]/route";
 import { POST as chatRoute } from "../src/app/api/chat/route";
 import { db, resetDbForTests } from "../src/lib/server/db";
+import { resetRateLimitsForTests } from "../src/lib/server/rate-limit";
+import { chatSchema, commitTurn, prepareTurn } from "../src/lib/server/service";
 
 function req(
   path: string,
@@ -120,6 +132,26 @@ afterAll(async () => {
   await resetDbForTests();
   vi.unstubAllEnvs();
 });
+beforeEach(async () => {
+  mocks.failure = "";
+  mocks.pause = false;
+  mocks.pauseAfterText = false;
+  mocks.resume = null;
+  mocks.abortOnEnd = null;
+  await resetRateLimitsForTests();
+});
+
+async function seededTranscript() {
+  const created = await body(await conversationRoute(req("/api/conversations", {
+    personaId: persona.id, connectionId: openai.id, modelId: mocks.modelName,
+  })));
+  for (const message of ["Explain prime numbers.", "Compare primes and squares."])
+    expect(await (await chatRoute(req("/api/chat", { conversationId: created.id, message }))).text()).toContain("event: done");
+  const context = { params: Promise.resolve({ id: created.id }) };
+  const read = () => detailRoute(req(`/api/conversations/${created.id}`), context).then(body);
+  const before = await read();
+  return { created, before, read };
+}
 
 describe("server-proxied chat integration", () => {
   it("connects two distinct providers and encrypts both keys without returning them", async () => {
@@ -399,5 +431,107 @@ describe("server-proxied chat integration", () => {
       const loaded = await body(await bootstrapRoute(req("/api/bootstrap")));
       expect(loaded.connections.find((c: any) => c.id === connection.id).last4).toBe("");
     }
+  });
+  it.each([
+    ["edit", "before"], ["edit", "after"],
+    ["regenerate", "before"], ["regenerate", "after"],
+  ] as const)("preserves the previous branch when %s fails %s provider text", async (action, failure) => {
+    const { created, before, read } = await seededTranscript();
+    mocks.failure = failure;
+    const stream = await (await chatRoute(req("/api/chat", {
+      conversationId: created.id, action,
+      ...(action === "edit" ? { messageId: before.messages.find((m: any) => m.role === "user").id, message: "Replace the first question." } : {}),
+    }))).text();
+    expect(stream).toContain("event: error");
+    expect(stream).not.toContain("event: done");
+    expect(stream.includes("event: text")).toBe(failure === "after");
+    const after = await read();
+    expect(after.messages).toEqual(before.messages);
+    expect(after.title).toBe(before.title);
+    expect(after.updatedAt).toBe(before.updatedAt);
+  });
+  it.each(["edit", "regenerate"] as const)("preserves the previous branch when %s is stopped after visible text", async (action) => {
+    const { created, before, read } = await seededTranscript();
+    mocks.pauseAfterText = true;
+    const stop = new AbortController();
+    const request = new Request(req("/api/chat", {
+      conversationId: created.id, action,
+      ...(action === "edit" ? { messageId: before.messages.find((m: any) => m.role === "user").id, message: "A proposed edit." } : {}),
+    }), { signal: stop.signal });
+    const response = await chatRoute(request);
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("safe draft replacement");
+    expect((await read()).messages).toEqual(before.messages);
+    stop.abort();
+    mocks.pauseAfterText = false;
+    mocks.resume?.();
+    while (!(await reader.read()).done) {}
+    reader.releaseLock();
+    const after = await read();
+    expect(after.messages).toEqual(before.messages);
+    expect(after.title).toBe(before.title);
+  });
+  it("preserves an old answer when the response body is cancelled", async () => {
+    const { created, before, read } = await seededTranscript();
+    mocks.pauseAfterText = true;
+    const response = await chatRoute(req("/api/chat", { conversationId: created.id, action: "regenerate" }));
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel();
+    reader.releaseLock();
+    mocks.pauseAfterText = false;
+    mocks.resume?.();
+    await vi.waitFor(async () => {
+      const rows = (await (await db()).query("SELECT id FROM usage_logs WHERE conversation_id=$1 AND status='cancelled'", [created.id])).rows;
+      expect(rows).toHaveLength(1);
+    });
+    expect((await read()).messages).toEqual(before.messages);
+  });
+  it("checks abort again after the upstream iterator finishes and before committing", async () => {
+    const { created, before, read } = await seededTranscript();
+    const stop = new AbortController();
+    mocks.abortOnEnd = () => stop.abort();
+    const response = await chatRoute(new Request(req("/api/chat", { conversationId: created.id, action: "regenerate" }), { signal: stop.signal }));
+    const stream = await response.text();
+    expect(stream).toContain("event: text");
+    expect(stream).not.toContain("event: done");
+    expect((await read()).messages).toEqual(before.messages);
+  });
+  it("commits a successful regeneration once, retaining earlier turns and the latest user", async () => {
+    const { created, before, read } = await seededTranscript();
+    const stream = await (await chatRoute(req("/api/chat", { conversationId: created.id, action: "regenerate" }))).text();
+    expect(stream).toContain("event: done");
+    const after = await read();
+    expect(after.messages.slice(0, -1)).toEqual(before.messages.slice(0, -1));
+    expect(after.messages.at(-1).id).not.toBe(before.messages.at(-1).id);
+    expect(after.messages.at(-1).status).toBe("complete");
+    expect(after.messages).toHaveLength(before.messages.length);
+  });
+  it("retains a submitted new turn and its safe partial output after an upstream failure", async () => {
+    const { created, before, read } = await seededTranscript();
+    mocks.failure = "after";
+    const stream = await (await chatRoute(req("/api/chat", {
+      conversationId: created.id, message: "A new question after the previous transcript.",
+    }))).text();
+    expect(stream).toContain("event: error");
+    const after = await read();
+    expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
+    expect(after.messages.slice(-2).map((message: any) => message.role)).toEqual(["user", "assistant"]);
+    expect(after.messages.at(-1).status).toBe("failed");
+    expect(after.messages.at(-1).content).toContain("safe draft replacement");
+  });
+  it("rolls back an entire edited branch replacement if the final SQL insert fails", async () => {
+    const { created, before, read } = await seededTranscript();
+    const turn = await prepareTurn("test-alice", chatSchema.parse({
+      conversationId: created.id, action: "edit",
+      messageId: before.messages.find((m: any) => m.role === "user").id,
+      message: "A valid proposed replacement.",
+    }));
+    // A real NOT NULL constraint failure exercises rollback across every CTE.
+    await expect(commitTurn(turn, null as unknown as string, "complete", new AbortController().signal)).rejects.toThrow();
+    const after = await read();
+    expect(after.messages).toEqual(before.messages);
+    expect(after.title).toBe(before.title);
   });
 });

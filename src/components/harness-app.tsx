@@ -332,12 +332,14 @@ export function HarnessApp() {
     }),
     uploadEpoch = useRef(0),
     uploadPending = useRef(false),
-    viewEpoch = useRef(0);
+    viewEpoch = useRef(0),
+    turnEpoch = useRef(0);
   contextRef.current = { chatId: chat?.id || "", connectionId, modelId, view };
   const selected = data?.connections.find((c) => c.id === connectionId),
     model = selected?.models.find((m) => m.id === modelId);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (canApply: () => boolean = () => true) => {
     const result = await api<Bootstrap>("/api/bootstrap");
+    if (!canApply()) return result;
     setData(result);
     if (!contextRef.current.chatId) {
       const selected =
@@ -569,8 +571,15 @@ export function HarnessApp() {
       );
       return;
     }
-    const savedDraft = draft,
+    const conversationId = chat.id,
+      savedDraft = draft,
       prior = chat.messages;
+    const epoch = ++turnEpoch.current,
+      navigation = viewEpoch.current;
+    const currentTurn = () =>
+      turnEpoch.current === epoch &&
+      viewEpoch.current === navigation &&
+      contextRef.current.chatId === conversationId;
     let messages = [...prior];
     if (action === "edit") {
       const index = messages.findIndex((m) => m.id === messageId);
@@ -614,7 +623,7 @@ export function HarnessApp() {
         credentials: "same-origin",
         signal: abort.signal,
         body: JSON.stringify({
-          conversationId: chat.id,
+          conversationId,
           message: action === "regenerate" ? undefined : content,
           action,
           messageId,
@@ -642,7 +651,7 @@ export function HarnessApp() {
         if (event === "text") {
           reply += payload.text;
           setChat((current) =>
-            current
+            current?.id === conversationId && currentTurn()
               ? {
                   ...current,
                   messages: current.messages.map((m) =>
@@ -652,7 +661,7 @@ export function HarnessApp() {
               : current,
           );
         }
-        if (event === "usage") setUsage(payload);
+        if (event === "usage" && currentTurn()) setUsage(payload);
         if (event === "error") throw Error(payload.message);
         if (event === "done") {
           complete = true;
@@ -680,47 +689,65 @@ export function HarnessApp() {
       if (!complete)
         throw Error("The response ended early. You can regenerate it.");
       terminalStatus = "complete";
-      clearFiles();
+      if (currentTurn()) clearFiles();
     } catch (e) {
-      if ((e as Error).name === "AbortError") {
+      if (abort.signal.aborted || (e as Error).name === "AbortError") {
         terminalStatus = "cancelled";
-        toast("Response stopped.");
+        if (currentTurn())
+          toast(
+            action === "send"
+              ? "Response stopped."
+              : "Response stopped. Previous messages restored.",
+          );
       } else {
-        toast.error((e as Error).message);
-        if (!reply && action === "send") setDraft(savedDraft);
+        if (currentTurn()) {
+          toast.error((e as Error).message);
+          if (!reply && action === "send") setDraft(savedDraft);
+        }
       }
     } finally {
       if (!complete) abort.abort();
       setChat((current) =>
-        current?.id === chat.id
+        current?.id === conversationId && currentTurn()
           ? {
               ...current,
-              messages: current.messages.map((m) =>
-                m.id === pendingId
-                  ? {
-                      ...m,
-                      status: terminalStatus,
-                      content:
-                        reply ||
-                        (terminalStatus === "cancelled"
-                          ? "Response stopped."
-                          : "The response could not complete. You can regenerate it."),
-                    }
-                  : m,
-              ),
+              messages:
+                !complete && action !== "send"
+                  ? prior
+                  : current.messages.map((m) =>
+                      m.id === pendingId
+                        ? {
+                            ...m,
+                            status: terminalStatus,
+                            content:
+                              reply ||
+                              (terminalStatus === "cancelled"
+                                ? "Response stopped."
+                                : "The response could not complete. You can regenerate it."),
+                          }
+                        : m,
+                    ),
             }
           : current,
       );
-      setBusy(false);
-      controller.current = null;
+      if (currentTurn()) {
+        if (!complete && action === "edit") {
+          setEditId(messageId || null);
+          setEditText(message);
+        }
+        setBusy(false);
+      }
+      if (controller.current === abort) controller.current = null;
       try {
         const detail = await api<ConversationDetail>(
-          `/api/conversations/${chat.id}`,
+          `/api/conversations/${conversationId}`,
         );
-        setChat((current) => (current?.id === chat.id ? detail : current));
-        await refresh();
+        setChat((current) =>
+          current?.id === conversationId && currentTurn() ? detail : current,
+        );
+        if (currentTurn()) await refresh(currentTurn);
       } catch {
-        /* the settled local response remains visible when a connection drops */
+        /* Keep the restored transcript if reconciliation cannot reach the server. */
       }
     }
   }

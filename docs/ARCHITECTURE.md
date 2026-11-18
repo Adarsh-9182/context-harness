@@ -46,7 +46,9 @@ Cache hits avoid another compilation call. New role compilation can incur provid
 
 ## Streaming and history
 
-The chat endpoint emits named SSE events: `text {text}`, `usage {inputTokens,outputTokens}`, `done {messageId,conversationId,truncatedTurns}`, and `error {code,message}`. Client cancellation propagates to provider fetch and backoff. An in-process conversation lock prevents overlapping sends/edits in one app process. Retries happen only before visible output. Failed/cancelled partial messages retain an explicit status.
+The chat endpoint emits named SSE events: `text {text}`, `usage {inputTokens,outputTokens}`, `done {messageId,conversationId,truncatedTurns}`, and `error {code,message}`. Client cancellation propagates to provider fetch and backoff. An in-process conversation lock prevents overlapping sends/edits in one app process. Retries happen only before visible output. Failed/cancelled partial messages from a new send retain an explicit status.
+
+Edits and regenerations stage a proposed transcript without deleting the saved branch. After full output validation and a final cancellation check, one SQL statement locks the owned, unarchived conversation and atomically replaces the branch, inserts the final response, and updates the title. A constraint failure rolls the statement back. Provider errors and stops keep the original messages and title. The browser restores its prior snapshot immediately on failure, retains edited text for retry, and guards reconciliation by conversation, navigation, and turn so a slow reload cannot overwrite a newer reply.
 
 Context budgeting uses a conservative UTF-8 estimate, not an exact provider tokenizer. Old complete turns are removed as needed while the persona and latest request remain. Actual usage comes from provider events. Images from earlier turns are marked unavailable after a switch to a text-only model; new unsupported images are rejected.
 

@@ -11,7 +11,7 @@ Use readiness for deployment promotion and liveness for process monitoring. Resp
 
 ## Railway
 
-Use a separate Harness project, with its own database, Redis, authentication, and encryption secrets. An active plan is required in the selected workspace. Project creation on 2026-11-17 was rejected because the workspace trial had expired; no Harness project or public deployment was created.
+Use a separate Harness project, with its own database, Redis, authentication, and encryption secrets. An active plan is required in the selected workspace. Project creation was rejected on 2026-11-17 and again on 2026-11-18 because the workspace trial had expired; no Harness project or public deployment was created.
 
 After activating a plan, check `railway list --json` before creating a project so retries do not create duplicates. These commands assume a signed-in CLI and a new Harness project:
 

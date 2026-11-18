@@ -37,7 +37,7 @@ Consumer chat subscriptions and API access are separate products. A Claude, Chat
 - Five server-side adapters with dynamic models, normalized SSE/errors/usage, bounded retries, timeouts, and image support where advertised.
 - AES-256-GCM encryption for stored keys, account-scoped SQL records, and no credentials in read responses or logs.
 - Structured persona compilation, versioned private prompts, scoped caching, role validation, and medical/legal/financial boundaries.
-- Persistent chats, model switching, stop, regenerate, edit/resend, and old-turn truncation that preserves the persona.
+- Persistent chats, model switching, stop, regenerate, edit/resend, and old-turn truncation that preserves the persona. Failed or stopped edits/regenerations keep the previous messages; a successful replacement is committed atomically.
 - Markdown, tables, math, highlighted code, image input, dark/light themes, responsive layout, and keyboard interactions.
 - Auth.js GitHub/email sign-in for configured deployments and explicit local development identity.
 - Production Redis rate limits, CSRF/Zod checks, redacted metadata logs, provider latency/usage records.

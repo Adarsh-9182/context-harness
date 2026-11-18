@@ -569,37 +569,89 @@ export async function prepareTurn(
     model.contextWindow,
     Math.min(model.maxOutputTokens, 4096),
   );
-  const database = await db();
-  if (newUser && removedIds.length) {
-    // The deletion and replacement insertion are a single SQL statement; an
-    // insertion failure rolls back the removed branch as well.
-    await database.query(
-      `WITH removed AS (DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[]) RETURNING id) INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($3,$1,'user',$4,$5,'complete',${nextMessageTimestamp("$1")})`,
-      [conversation.id, removedIds, newUser.id, newUser.content, JSON.stringify(newUser.attachments)],
-    );
-  } else if (newUser) {
+  const firstUser = history.find((m) => m.role === "user");
+  const title = firstUser?.content.slice(0, 75) || `${persona.role} · Image`;
+  // A new send is durable even if the model later fails. Replacements remain
+  // staged until their complete, validated response can be committed atomically.
+  if (input.action === "send" && newUser) {
+    const database = await db();
     await database.query(
       `INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($1,$2,'user',$3,$4,'complete',${nextMessageTimestamp("$2")})`,
       [newUser.id, conversation.id, newUser.content, JSON.stringify(newUser.attachments)],
     );
-  } else if (removedIds.length) {
-    await database.query(
-      "DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[])",
-      [conversation.id, removedIds],
-    );
-  }
-  const firstUser = history.find((m) => m.role === "user");
-  if (firstUser)
     await database.query("UPDATE conversations SET title=$1,updated_at=NOW() WHERE id=$2", [
-      firstUser.content.slice(0, 75) || `${persona.role} · Image`,
+      title,
       conversation.id,
     ]);
+  }
   return {
+    userId,
+    action: input.action,
     conversation,
     connection,
     persona,
     model,
     messages,
     latestUser: history.findLast((m) => m.role === "user")?.content ?? "",
+    title,
+    replacement: input.action === "send" ? undefined : { removedIds, newUser },
   };
+}
+
+export async function commitTurn(
+  turn: Awaited<ReturnType<typeof prepareTurn>>,
+  output: string,
+  status: string,
+  signal: AbortSignal,
+) {
+  const database = await db();
+  // Never replace an earlier branch after a stop/deadline/disconnect. Once this
+  // atomic statement starts, its entire transcript change succeeds or rolls back.
+  if (signal.aborted)
+    throw new AppError(499, "cancelled", "Response stopped.");
+  const messageId = randomUUID();
+  const edited = turn.replacement?.newUser;
+  const result = await database.query<{ id: string }>(
+    `WITH owned AS MATERIALIZED (
+      SELECT id FROM conversations
+      WHERE id=$1 AND user_id=$10 AND deleted_at IS NULL FOR UPDATE
+    ), next_time AS MATERIALIZED (
+      SELECT ${nextMessageTimestamp("$1")} AS stamp FROM owned
+    ), removed AS (
+      DELETE FROM messages WHERE conversation_id IN (SELECT id FROM owned)
+      AND id=ANY($2::text[]) RETURNING id
+    ), edited AS (
+      INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at)
+      SELECT $3,$1,'user',$4,$5::jsonb,'complete',stamp FROM next_time
+      WHERE $6::boolean RETURNING id
+    ), answer AS (
+      INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at)
+      SELECT $7,$1,'assistant',$8,'[]'::jsonb,$9,
+        stamp + CASE WHEN $6::boolean THEN INTERVAL '1 microsecond' ELSE INTERVAL '0' END
+      FROM next_time RETURNING id
+    ), updated AS (
+      UPDATE conversations SET title=$11,updated_at=clock_timestamp()
+      WHERE id IN (SELECT id FROM owned) RETURNING id
+    ) SELECT answer.id FROM answer CROSS JOIN updated`,
+    [
+      turn.conversation.id,
+      turn.replacement?.removedIds ?? [],
+      edited?.id ?? randomUUID(),
+      edited?.content ?? "",
+      JSON.stringify(edited?.attachments ?? []),
+      !!edited,
+      messageId,
+      output,
+      status,
+      turn.userId,
+      turn.title,
+    ],
+  );
+  if (!result.rows.length)
+    throw new AppError(
+      409,
+      "conversation_unavailable",
+      "This conversation is no longer available.",
+    );
+  return messageId;
 }

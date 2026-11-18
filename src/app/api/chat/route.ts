@@ -7,7 +7,12 @@ import {
   errorResponse,
   AppError,
 } from "@/lib/server/http";
-import { chatSchema, prepareTurn, insertMessage } from "@/lib/server/service";
+import {
+  chatSchema,
+  prepareTurn,
+  commitTurn,
+  insertMessage,
+} from "@/lib/server/service";
 import { decryptKey } from "@/lib/server/crypto";
 import { db } from "@/lib/server/db";
 import { consumeRateLimit } from "@/lib/server/rate-limit";
@@ -128,18 +133,12 @@ export async function POST(request: Request) {
                   "The model returned no text. Try regenerating or select another model.",
                 );
             }
-            const messageId = await insertMessage(
-              turn.conversation.id,
-              "assistant",
+            const messageId = await commitTurn(
+              turn,
               output,
-              [],
               status,
+              signal,
             );
-            await (
-              await db()
-            ).query("UPDATE conversations SET updated_at=NOW() WHERE id=$1", [
-              turn.conversation.id,
-            ]);
             emit("usage", { inputTokens, outputTokens });
             emit("done", {
               messageId,
@@ -150,6 +149,7 @@ export async function POST(request: Request) {
             status = signal.aborted ? "cancelled" : "failed";
             if (
               output &&
+              turn.action === "send" &&
               !(
                 error instanceof AppError &&
                 error.code === "instruction_disclosure_blocked"

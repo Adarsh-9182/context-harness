@@ -1,7 +1,8 @@
 import { requestUser } from "@/lib/server/auth";
 import { requireMutation, parseJson, errorResponse } from "@/lib/server/http";
 import {
-  bootstrap,
+  listConversations,
+  conversationListSchema,
   createConversation,
   conversationSchema,
 } from "@/lib/server/service";
@@ -10,8 +11,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
+    const user = await requestUser(request);
+    await consumeRateLimit(user.id, "read");
+    const archived = conversationListSchema.parse(new URL(request.url).searchParams.get("archived") ?? undefined) === "true";
     return Response.json(
-      (await bootstrap(await requestUser(request))).conversations,
+      await listConversations(user.id, archived),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

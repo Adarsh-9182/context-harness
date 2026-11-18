@@ -49,9 +49,11 @@ CREATE TABLE IF NOT EXISTS conversations (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), persona_id TEXT NOT NULL REFERENCES personas(id),
  connection_id TEXT REFERENCES provider_connections(id) ON DELETE SET NULL, model_id TEXT NOT NULL,
  title TEXT NOT NULL DEFAULT 'New conversation', deleted_at TIMESTAMPTZ,
+ title_edited BOOLEAN NOT NULL DEFAULT FALSE,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS conversations_user ON conversations(user_id, updated_at);
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title_edited BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS messages (
  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
  role TEXT NOT NULL CHECK (role IN ('user','assistant')), content TEXT NOT NULL,
@@ -118,12 +120,17 @@ async function open(): Promise<ManagedDatabase> {
       close: () => client.close(),
     };
   }
+  await initializeSchema(database);
+  return database;
+}
+
+/** Idempotent schema initialization also upgrades databases created by earlier releases. */
+export async function initializeSchema(database: Database): Promise<void> {
   // Individual statements work consistently with postgres.js and PGlite parameterized queries.
   for (const statement of SCHEMA.split(";")
     .map((value) => value.trim())
     .filter(Boolean))
     await database.query(statement);
-  return database;
 }
 
 export function db(): Promise<Database> {

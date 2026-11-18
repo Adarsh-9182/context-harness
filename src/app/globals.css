@@ -322,6 +322,136 @@ html[data-theme="dark"] .button-primary {
   overflow: auto;
   min-height: 70px;
 }
+.conversation-menu {
+  z-index: 110;
+  min-width: 210px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px #00000020;
+  font-size: 12px;
+}
+.conversation-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+.conversation-menu [role="menuitem"][data-highlighted] {
+  background: var(--hover);
+}
+.conversation-menu [role="menuitem"][data-disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+.conversation-menu [data-radix-collection-item] svg {
+  color: var(--muted);
+}
+.conversation-menu [role="separator"] {
+  height: 1px;
+  margin: 5px 3px;
+  background: var(--border);
+}
+.conversation-menu > div:first-child:not([role="menuitem"]) {
+  padding: 8px 10px 6px;
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.management-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.management-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--error-text, #a22135);
+  background: var(--error-bg, #fff0f1);
+  padding: 11px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+html[data-theme="dark"] .management-error {
+  color: #ffb4bc;
+  background: #382329;
+}
+.archives-body {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.archive-list {
+  max-height: min(48dvh, 420px);
+  overflow: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+.archive-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.archive-item:last-child {
+  border-bottom: none;
+}
+.archive-item-label {
+  min-width: 0;
+  flex: 1;
+}
+.archive-item strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 550;
+}
+.archive-item small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--subtle);
+}
+.archive-empty {
+  min-height: 190px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  text-align: center;
+  color: var(--muted);
+}
+.archive-empty strong {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+.archive-empty p,
+.archive-no-results {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.archive-empty p {
+  max-width: 280px;
+}
+.archive-no-results {
+  padding: 28px 10px;
+  text-align: center;
+}
 .history-empty {
   margin: 18px 12px;
   color: var(--subtle);

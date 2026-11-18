@@ -3,9 +3,11 @@ import { requireMutation, parseJson, errorResponse } from "@/lib/server/http";
 import {
   conversationDetail,
   switchModel,
-  switchSchema,
+  conversationPatchSchema,
+  renameConversation,
   removeConversation,
 } from "@/lib/server/service";
+import { consumeRateLimit } from "@/lib/server/rate-limit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(
@@ -13,9 +15,11 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   try {
+    const user = await requestUser(request);
+    await consumeRateLimit(user.id, "read");
     return Response.json(
       await conversationDetail(
-        (await requestUser(request)).id,
+        user.id,
         (await context.params).id,
       ),
       { headers: { "Cache-Control": "no-store" } },
@@ -31,12 +35,14 @@ export async function PATCH(
   try {
     requireMutation(request);
     const user = await requestUser(request);
+    await consumeRateLimit(user.id, "conversations");
+    const id = (await context.params).id;
+    const input = await parseJson(request, conversationPatchSchema);
     return Response.json(
-      await switchModel(
-        user.id,
-        (await context.params).id,
-        await parseJson(request, switchSchema),
-      ),
+      "title" in input
+        ? await renameConversation(user.id, id, input.title)
+        : await switchModel(user.id, id, input),
+      { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
     return errorResponse(error);
@@ -49,8 +55,9 @@ export async function DELETE(
   try {
     requireMutation(request);
     const user = await requestUser(request);
+    await consumeRateLimit(user.id, "conversations");
     await removeConversation(user.id, (await context.params).id);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return errorResponse(error);
   }

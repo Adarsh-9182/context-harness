@@ -32,12 +32,19 @@ Open **http://localhost:4318** for Compose. Database, Redis, and encryption-key 
 
 Consumer chat subscriptions and API access are separate products. A Claude, ChatGPT, or DeepSeek chat subscription does not automatically supply an API key or API credit for Harness. Use supported API keys/billing. Harness does not collect subscription session tokens.
 
+## Manage conversations
+
+Open the conversation menu in the chat header to rename, download, or archive a chat. A custom title stays in place when you send, edit, or regenerate messages. Open **Archived chats** from the sidebar or workspace settings to search archived conversations and restore them with their messages intact.
+
+Markdown downloads include the visible conversation, role, focus, and model. They preserve code and math, list image filenames without embedding image data, and exclude internal instructions and stored provider credentials. Visible message text is exported as written, including anything you pasted yourself.
+
 ## Included
 
 - Five server-side adapters with dynamic models, normalized SSE/errors/usage, bounded retries, timeouts, and image support where advertised.
 - AES-256-GCM encryption for stored keys, account-scoped SQL records, and no credentials in read responses or logs.
 - Structured persona compilation, versioned private prompts, scoped caching, role validation, and medical/legal/financial boundaries.
 - Persistent chats, model switching, stop, regenerate, edit/resend, and old-turn truncation that preserves the persona. Failed or stopped edits/regenerations keep the previous messages; a successful replacement is committed atomically.
+- Persistent custom titles, recoverable archives, and Markdown transcript downloads.
 - Markdown, tables, math, highlighted code, image input, dark/light themes, responsive layout, and keyboard interactions.
 - Auth.js GitHub/email sign-in for configured deployments and explicit local development identity.
 - Production Redis rate limits, CSRF/Zod checks, redacted metadata logs, provider latency/usage records.

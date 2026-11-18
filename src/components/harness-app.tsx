@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react";
 import { Toaster, toast } from "sonner";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowUp,
   ArrowRight,
@@ -48,6 +49,9 @@ import {
   MoreHorizontal,
   ImageIcon,
   AlertCircle,
+  Archive,
+  ArchiveRestore,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -301,6 +305,18 @@ export function HarnessApp() {
     [searchOpen, setSearchOpen] = useState(false),
     [settingsOpen, setSettingsOpen] = useState(false),
     [personaEditOpen, setPersonaEditOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Conversation | null>(null),
+    [renameTitle, setRenameTitle] = useState(""),
+    [renameError, setRenameError] = useState(""),
+    [renaming, setRenaming] = useState(false),
+    [actionsOpen, setActionsOpen] = useState(false),
+    [exporting, setExporting] = useState(false),
+    [archivesOpen, setArchivesOpen] = useState(false),
+    [archives, setArchives] = useState<Conversation[]>([]),
+    [archiveQuery, setArchiveQuery] = useState(""),
+    [archivesLoading, setArchivesLoading] = useState(false),
+    [archivesError, setArchivesError] = useState(""),
+    [restoringId, setRestoringId] = useState("");
   const [role, setRole] = useState(""),
     [focus, setFocus] = useState(""),
     [showFocus, setShowFocus] = useState(false),
@@ -333,7 +349,8 @@ export function HarnessApp() {
     uploadEpoch = useRef(0),
     uploadPending = useRef(false),
     viewEpoch = useRef(0),
-    turnEpoch = useRef(0);
+    turnEpoch = useRef(0),
+    archivesEpoch = useRef(0);
   contextRef.current = { chatId: chat?.id || "", connectionId, modelId, view };
   const selected = data?.connections.find((c) => c.id === connectionId),
     model = selected?.models.find((m) => m.id === modelId);
@@ -828,13 +845,136 @@ export function HarnessApp() {
     }
   }
   async function removeConversation(c: Conversation) {
+    if (navigationBlocked()) return;
+    turnEpoch.current++;
+    setSwitching(true);
     try {
       await api(`/api/conversations/${c.id}`, "DELETE");
-      if (chat?.id === c.id) newChat();
+      if (contextRef.current.chatId === c.id) {
+        viewEpoch.current++;
+        clearFiles();
+        setChat(null);
+        setView("home");
+        setRole("");
+        setFocus("");
+        setDraft("");
+        setUsage(null);
+        setEditId(null);
+        setSidebar(false);
+      }
       await refresh();
       toast("Conversation archived.");
     } catch (e) {
       toast.error((e as Error).message);
+    } finally {
+      setSwitching(false);
+    }
+  }
+  function beginRename(c: Conversation) {
+    if (navigationBlocked()) return;
+    turnEpoch.current++;
+    setRenameTitle(c.title);
+    setRenameError("");
+    setRenameTarget(c);
+  }
+  async function saveRename(event: FormEvent) {
+    event.preventDefault();
+    if (!renameTarget || renaming) return;
+    const title = renameTitle.trim();
+    if (!title || title.length > 120) {
+      setRenameError("Use a title between 1 and 120 characters.");
+      return;
+    }
+    setRenaming(true);
+    setSwitching(true);
+    setRenameError("");
+    try {
+      const result = await api<Conversation>(`/api/conversations/${renameTarget.id}`, "PATCH", { title });
+      setChat((current) => current?.id === result.id
+        ? { ...current, title: result.title, updatedAt: result.updatedAt }
+        : current);
+      setData((current) => current ? {
+        ...current,
+        conversations: [result, ...current.conversations.filter((c) => c.id !== result.id)],
+      } : current);
+      setRenameTarget(null);
+      toast.success("Conversation renamed.");
+    } catch (error) {
+      setRenameError((error as Error).message);
+    } finally {
+      setRenaming(false);
+      setSwitching(false);
+    }
+  }
+  async function exportConversation(c: Conversation) {
+    if (navigationBlocked() || exporting) return;
+    const navigation = viewEpoch.current;
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/conversations/${c.id}/export`, {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw Error(error.error?.message || "This conversation could not be downloaded. Try again.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") || "")?.[1] || "harness-conversation.md";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      if (viewEpoch.current === navigation) toast.error((error as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
+  async function loadArchives() {
+    const epoch = ++archivesEpoch.current;
+    setArchivesLoading(true);
+    setArchivesError("");
+    try {
+      const result = await api<Conversation[]>("/api/conversations?archived=true");
+      if (archivesEpoch.current === epoch) setArchives(result);
+    } catch (error) {
+      if (archivesEpoch.current === epoch) setArchivesError((error as Error).message);
+    } finally {
+      if (archivesEpoch.current === epoch) setArchivesLoading(false);
+    }
+  }
+  function openArchives() {
+    if (navigationBlocked()) return;
+    turnEpoch.current++;
+    setSettingsOpen(false);
+    setSidebar(false);
+    setArchiveQuery("");
+    setArchives([]);
+    setArchivesOpen(true);
+    void loadArchives();
+  }
+  async function restoreConversation(c: Conversation) {
+    if (restoringId) return;
+    const epoch = archivesEpoch.current;
+    setRestoringId(c.id);
+    setArchivesError("");
+    try {
+      const restored = await api<Conversation>(`/api/conversations/${c.id}/restore`, "POST", {});
+      if (archivesEpoch.current !== epoch) return;
+      setArchives((current) => current.filter((item) => item.id !== c.id));
+      setData((current) => current ? {
+        ...current,
+        conversations: [restored, ...current.conversations.filter((item) => item.id !== restored.id)],
+      } : current);
+      toast.success("Conversation restored to your history.");
+    } catch (error) {
+      if (archivesEpoch.current === epoch) setArchivesError((error as Error).message);
+    } finally {
+      setRestoringId("");
     }
   }
   if (loading)
@@ -902,6 +1042,10 @@ export function HarnessApp() {
               <Compass size={16} />
               Explore experts<span className="small-pill">12</span>
             </button>
+            <button onClick={openArchives}>
+              <Archive size={16} />
+              Archived chats
+            </button>
           </div>
           <div className="history-heading">YOUR CONVERSATIONS</div>
           <div className="history-list">
@@ -935,7 +1079,7 @@ export function HarnessApp() {
                       onClick={() => removeConversation(c)}
                       disabled={busy || compiling || switching}
                     >
-                      <Trash2 size={13} />
+                      <Archive size={13} />
                     </button>
                   </div>
                 );
@@ -1050,6 +1194,31 @@ export function HarnessApp() {
                 <ShieldCheck size={13} />
                 Your private workspace
               </span>
+              {view === "chat" && chat && (
+                <DropdownMenu.Root open={actionsOpen} onOpenChange={setActionsOpen}>
+                  <DropdownMenu.Trigger asChild>
+                    <button className="icon-button" aria-label="Conversation actions" disabled={busy || compiling || switching}>
+                      <MoreHorizontal size={19} />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      className="conversation-menu"
+                      align="end"
+                      sideOffset={8}
+                      onCloseAutoFocus={(event) => { if (renameTarget) event.preventDefault(); }}
+                    >
+                      <DropdownMenu.Label>Conversation</DropdownMenu.Label>
+                      <DropdownMenu.Item onSelect={() => beginRename(chat)}><Pencil size={15} />Rename</DropdownMenu.Item>
+                      <DropdownMenu.Item onSelect={() => exportConversation(chat)} disabled={exporting}>
+                        {exporting ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}Download Markdown
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Separator />
+                      <DropdownMenu.Item onSelect={() => removeConversation(chat)}><Archive size={15} />Archive</DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
+              )}
               <button
                 className="icon-button"
                 onClick={toggleTheme}
@@ -1555,6 +1724,79 @@ export function HarnessApp() {
         </div>
       </Dialog>
       <Dialog
+        open={!!renameTarget}
+        onOpenChange={(open) => { if (!open && !renaming) setRenameTarget(null); }}
+        title="Rename conversation"
+        description="Give this conversation a name you’ll recognize."
+      >
+        <form className="simple-form" onSubmit={saveRename}>
+          <label>
+            Conversation title
+            <input
+              data-dialog-autofocus
+              value={renameTitle}
+              onChange={(event) => { setRenameTitle(event.target.value); setRenameError(""); }}
+              maxLength={120}
+              required
+              disabled={renaming}
+              aria-invalid={!!renameError}
+              aria-describedby={renameError ? "rename-error" : "rename-help"}
+            />
+          </label>
+          <p className="field-help" id="rename-help">Your title stays the same as the conversation grows.</p>
+          {renameError && <p className="management-error" id="rename-error" role="alert"><AlertCircle size={15} />{renameError}</p>}
+          <div className="management-actions">
+            <Button type="button" variant="ghost" onClick={() => setRenameTarget(null)} disabled={renaming}>Cancel</Button>
+            <Button type="submit" disabled={renaming || !renameTitle.trim()}>
+              {renaming && <LoaderCircle size={15} className="spin" />}Save title
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+      <Dialog
+        open={archivesOpen}
+        onOpenChange={(open) => {
+          if (!open && !restoringId) {
+            archivesEpoch.current++;
+            setArchivesOpen(false);
+          }
+        }}
+        title="Archived conversations"
+        description="Out of your way, ready when you need them. Restore a chat to bring it back to your history."
+        className="archives-dialog"
+      >
+        <div className="archives-body">
+          <div className="search-field">
+            <Search size={17} />
+            <input data-dialog-autofocus aria-label="Search archived conversations" placeholder="Find an archived conversation…" value={archiveQuery} onChange={(event) => setArchiveQuery(event.target.value)} />
+          </div>
+          {archivesError && <p className="management-error" role="alert"><AlertCircle size={15} />{archivesError}</p>}
+          {archivesLoading ? (
+            <div className="archive-empty" role="status"><LoaderCircle size={22} className="spin" /><p>Finding your conversations…</p></div>
+          ) : archivesError && !archives.length ? (
+            <div className="archive-empty"><Button variant="outline" onClick={() => void loadArchives()}>Try again</Button></div>
+          ) : !archives.length ? (
+            <div className="archive-empty"><Archive size={28} /><strong>A little room to think.</strong><p>Archived conversations will appear here. Your messages stay saved.</p></div>
+          ) : (
+            <div className="archive-list" aria-label="Archived conversations" aria-busy={!!restoringId}>
+              {archives.filter((c) => c.title.toLowerCase().includes(archiveQuery.toLowerCase())).map((c) => {
+                const expert = data?.personas.find((p) => p.id === c.personaId);
+                return (
+                  <div className="archive-item" key={c.id}>
+                    <ExpertAvatar role={expert?.role || "Expert"} color={expert?.color} />
+                    <span className="archive-item-label"><strong>{c.title}</strong><small>{expert?.role || "Expert conversation"}</small></span>
+                    <Button variant="outline" size="sm" onClick={() => restoreConversation(c)} disabled={!!restoringId} aria-label={`Restore ${c.title}`}>
+                      {restoringId === c.id ? <LoaderCircle size={14} className="spin" /> : <ArchiveRestore size={14} />}Restore
+                    </Button>
+                  </div>
+                );
+              })}
+              {!archives.some((c) => c.title.toLowerCase().includes(archiveQuery.toLowerCase())) && <p className="archive-no-results" role="status">No archived conversations match that search.</p>}
+            </div>
+          )}
+        </div>
+      </Dialog>
+      <Dialog
         open={personaEditOpen}
         onOpenChange={setPersonaEditOpen}
         title="A little more you."
@@ -1635,6 +1877,10 @@ export function HarnessApp() {
             >
               Manage <ArrowRight size={14} />
             </Button>
+          </div>
+          <div>
+            <span><strong>Archived conversations</strong><small>Bring a saved conversation back to your history.</small></span>
+            <Button variant="outline" size="sm" onClick={openArchives}><Archive size={14} />View archive</Button>
           </div>
           <section className="settings-note">
             <ShieldCheck size={19} />

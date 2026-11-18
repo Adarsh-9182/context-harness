@@ -25,7 +25,7 @@ The database schema is initialized idempotently using parameterized SQL. Postgre
 | `users`                           | Account identity and Auth.js user fields.                                                    |
 | `provider_connections`            | Owner, provider/model metadata, last four key characters, authenticated ciphertext envelope. |
 | `personas`                        | Private definition/prompt, role/focus, greeting, cache key, template version.                |
-| `conversations`                   | Owner, persona, current connection/model, title, timestamps, soft deletion.                  |
+| `conversations`                   | Owner, persona, connection/model, title and custom-title flag, timestamps, soft archival.    |
 | `messages`                        | Visible content, image attachments, completion status, timestamps.                           |
 | `usage_logs`                      | Provider/model, tokens, latency, and status without content or credentials.                  |
 | `accounts`, `verification_tokens` | OAuth account links and expiring email sign-in tokens.                                       |
@@ -51,6 +51,19 @@ The chat endpoint emits named SSE events: `text {text}`, `usage {inputTokens,out
 Edits and regenerations stage a proposed transcript without deleting the saved branch. After full output validation and a final cancellation check, one SQL statement locks the owned, unarchived conversation and atomically replaces the branch, inserts the final response, and updates the title. A constraint failure rolls the statement back. Provider errors and stops keep the original messages and title. The browser restores its prior snapshot immediately on failure, retains edited text for retry, and guards reconciliation by conversation, navigation, and turn so a slow reload cannot overwrite a newer reply.
 
 Context budgeting uses a conservative UTF-8 estimate, not an exact provider tokenizer. Old complete turns are removed as needed while the persona and latest request remain. Actual usage comes from provider events. Images from earlier turns are marked unavailable after a switch to a text-only model; new unsupported images are rejected.
+
+## Conversation management
+
+Custom titles set `title_edited` so later message saves cannot overwrite them, including a rename made while a response is being prepared. Idempotent schema initialization adds this column to existing databases without removing saved records. Archival sets `deleted_at`; restoring clears it and keeps the messages and persona association.
+
+| Endpoint | Behavior |
+| --- | --- |
+| `PATCH /api/conversations/:id` with `{title}` | Rename an owned active chat; the existing model-selection payload remains supported. |
+| `GET /api/conversations?archived=true` | List the owner's archived chats, with public metadata only. |
+| `POST /api/conversations/:id/restore` with `{}` | Restore an owned chat; repeating the request is safe. |
+| `GET /api/conversations/:id/export` | Download Markdown for an owned active conversation. |
+
+Lists and downloads are rate limited and not cached. Mutations require same-origin guards and strict input validation. The exporter selects visible fields explicitly, omits internal message roles and image payloads, escapes metadata, and uses an ASCII filename. It preserves visible message content verbatim rather than attempting to redact secrets a user manually pasted.
 
 ## Disclosure limits
 

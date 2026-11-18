@@ -50,6 +50,7 @@ export type ConversationRow = {
   connection_id: string;
   model_id: string;
   title: string;
+  title_edited: boolean;
   updated_at: string | Date;
   deleted_at: string | null;
 };
@@ -90,6 +91,14 @@ export const switchSchema = z
     modelId: z.string().min(1).max(200),
   })
   .strict();
+export const renameConversationSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120).regex(/^[^\u0000-\u001f\u007f]+$/, "Use a single-line conversation title."),
+  })
+  .strict();
+export const conversationPatchSchema = z.union([switchSchema, renameConversationSchema]);
+export const restoreConversationSchema = z.object({}).strict();
+export const conversationListSchema = z.enum(["true", "false"]).optional();
 const attachmentSchema = z
   .object({
     type: z.literal("image"),
@@ -420,6 +429,34 @@ export async function getConversation(userId: string, id: string) {
     );
   return row;
 }
+export async function listConversations(userId: string, archived = false) {
+  const rows = await (await db()).query<ConversationRow>(
+    archived
+      ? "SELECT * FROM conversations WHERE user_id=$1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC,id ASC LIMIT 100"
+      : "SELECT * FROM conversations WHERE user_id=$1 AND deleted_at IS NULL ORDER BY updated_at DESC,id ASC LIMIT 100",
+    [userId],
+  );
+  return rows.rows.map(publicConversation);
+}
+export async function renameConversation(userId: string, id: string, title: string) {
+  const input = renameConversationSchema.parse({ title });
+  const result = await (await db()).query<ConversationRow>(
+    "UPDATE conversations SET title=$1,title_edited=TRUE,updated_at=clock_timestamp() WHERE id=$2 AND user_id=$3 AND deleted_at IS NULL RETURNING *",
+    [input.title, id, userId],
+  );
+  if (!result.rows[0])
+    throw new AppError(404, "conversation_not_found", "This conversation was not found.");
+  return publicConversation(result.rows[0]);
+}
+export async function restoreConversation(userId: string, id: string) {
+  const result = await (await db()).query<ConversationRow>(
+    "UPDATE conversations SET deleted_at=NULL,updated_at=CASE WHEN deleted_at IS NULL THEN updated_at ELSE clock_timestamp() END WHERE id=$1 AND user_id=$2 RETURNING *",
+    [id, userId],
+  );
+  if (!result.rows[0])
+    throw new AppError(404, "conversation_not_found", "This conversation was not found.");
+  return publicConversation(result.rows[0]);
+}
 export async function conversationDetail(userId: string, id: string) {
   const row = await getConversation(userId, id);
   const persona = await getPersona(userId, row.persona_id);
@@ -579,7 +616,7 @@ export async function prepareTurn(
       `INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($1,$2,'user',$3,$4,'complete',${nextMessageTimestamp("$2")})`,
       [newUser.id, conversation.id, newUser.content, JSON.stringify(newUser.attachments)],
     );
-    await database.query("UPDATE conversations SET title=$1,updated_at=NOW() WHERE id=$2", [
+    await database.query("UPDATE conversations SET title=CASE WHEN title_edited THEN title ELSE $1 END,updated_at=NOW() WHERE id=$2", [
       title,
       conversation.id,
     ]);
@@ -630,7 +667,7 @@ export async function commitTurn(
         stamp + CASE WHEN $6::boolean THEN INTERVAL '1 microsecond' ELSE INTERVAL '0' END
       FROM next_time RETURNING id
     ), updated AS (
-      UPDATE conversations SET title=$11,updated_at=clock_timestamp()
+      UPDATE conversations SET title=CASE WHEN title_edited THEN title ELSE $11 END,updated_at=clock_timestamp()
       WHERE id IN (SELECT id FROM owned) RETURNING id
     ) SELECT answer.id FROM answer CROSS JOIN updated`,
     [

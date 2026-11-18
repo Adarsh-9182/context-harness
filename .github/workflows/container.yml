@@ -27,12 +27,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install locked dependencies
         run: npm ci
-      - name: Verify chat and auth persistence against real Postgres
+      - name: Verify chat management and auth against real Postgres
         # These credentials exist only for this empty, disposable CI database.
         # No Redis URL: this job tests SQL persistence, not rate-limit quotas.
         env:
           DATABASE_URL: postgresql://harness:ci-only-${{ github.run_id }}-${{ github.run_attempt }}@postgres:5432/harness_ci
-        run: npx vitest run tests/chat.test.ts tests/auth.test.ts
+        run: npx vitest run tests/chat.test.ts tests/auth.test.ts tests/conversations.test.ts tests/export.test.ts
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 15

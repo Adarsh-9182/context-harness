@@ -3,11 +3,25 @@ import { resolve } from "node:path";
 import { AppError } from "./http";
 
 export interface Database {
+  /** JSON/JSONB parameters use serialized JSON text; text values stay opaque. */
   query<T = Record<string, unknown>>(
     sql: string,
     params?: unknown[],
   ): Promise<{ rows: T[] }>;
 }
+
+// Both database implementations receive serialized JSON from the service.
+// postgres.js normally stringifies JSON parameters again after PostgreSQL
+// describes their OIDs, which would store a JSON string instead of an object.
+// Override only JSON/JSONB, preserving normal text and PostgreSQL array codecs.
+export const POSTGRES_JSON_TYPE = {
+  to: 114,
+  from: [114, 3802],
+  serialize: (value: unknown) =>
+    typeof value === "string" ? value : JSON.stringify(value),
+  parse: (value: string) => JSON.parse(value) as unknown,
+};
+
 type ManagedDatabase = Database & { close?: () => Promise<void> };
 const globals = globalThis as typeof globalThis & {
   __harnessDatabase?: Promise<ManagedDatabase>;
@@ -73,6 +87,7 @@ async function open(): Promise<ManagedDatabase> {
       idle_timeout: 20,
       connect_timeout: 10,
       onnotice: () => {},
+      types: { json: POSTGRES_JSON_TYPE },
     });
     database = {
       async query<T>(sql: string, params: unknown[] = []) {

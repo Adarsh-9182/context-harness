@@ -3,7 +3,7 @@
 Verified with Next.js 16.4.6. Initial clean-clone and build verification used Node 24.21.0; the final local regression run used Node 26.10.0. GitHub CI uses Node 24.
 
 - TypeScript check passes.
-- 86 unit/integration tests pass. These cover adapters, encryption authentication tags, malformed envelopes, user scoping, persona compilation/cache, private response fields, streaming, context retention, disclosure checks, UI state boundaries, and contrast calculations. Production additions cover bounded readiness, specialty/focus guardrails, transcript preservation on rejected edits, short-key redaction, SQL authentication updates, and local account controls.
+- 90 unit/integration tests pass. These cover adapters, encryption authentication tags, malformed envelopes, user scoping, persona compilation/cache, private response fields, streaming, context retention, disclosure checks, UI state boundaries, and contrast calculations. Production additions cover bounded readiness, specialty/focus guardrails, transcript preservation on rejected edits, short-key redaction, SQL authentication updates, local account controls, and Postgres JSON parameter codecs.
 - Four Playwright workflows pass in Chromium on desktop and mobile: two provider connections; role-only Mathematician creation; math/code/tables; model switching; direct disclosure refusal; regenerate; edit/resend; cancellation; stale-file isolation; keyboard search; invalid keys; archiving; and role-draft continuity.
 - Production webpack build passes, including all route handlers and the standalone output.
 - A separate clean clone with no node_modules started using only `npm start`; it installed the locked dependencies and served both the website and authenticated local bootstrap successfully (HTTP 200).

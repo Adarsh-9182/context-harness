@@ -11,6 +11,7 @@ import { Toaster, toast } from "sonner";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowUp,
+  ArrowDown,
   ArrowRight,
   Plus,
   Search,
@@ -52,13 +53,21 @@ import {
   Archive,
   ArchiveRestore,
   Download,
+  Layers3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Markdown } from "@/components/markdown";
 import { AccountConnections as Connections } from "@/components/account-connections";
+import { ContextBuilder } from "@/components/context-builder";
+import { ContextDetails } from "@/components/context-details";
+import { ProfessionLibrary } from "@/components/profession-library";
+import { ProfessionSetup } from "@/components/profession-setup";
 import TextareaAutosize from "react-textarea-autosize";
 import { useUI } from "@/lib/store";
+import { chatFrames, ChatResponseError, type CommittedTurn } from "@/lib/chat-stream";
+import { PROFESSION_COUNT } from "@/lib/professions";
+import type { ProfessionBrief } from "@/lib/profession-brief";
 import type {
   Bootstrap,
   Connection,
@@ -168,6 +177,14 @@ const PROVIDERS = [
 ];
 const providerName = (id: string) =>
   PROVIDERS.find((p) => p.id === id)?.name || id;
+
+type TurnIssue = {
+  conversationId: string;
+  message: string;
+  code?: string;
+  recovery: "retry" | "draft" | "check" | "edit";
+  sent?: { id: string; draft: string };
+};
 const safeColor = (color?: string) =>
   color && /^#[a-f\d]{6}$/i.test(color)
     ? color
@@ -268,11 +285,19 @@ export function HarnessApp() {
   const [connectionId, setConnectionId] = useState(""),
     [modelId, setModelId] = useState(""),
     [chat, setChat] = useState<ConversationDetail | null>(null),
-    [view, setView] = useState<"home" | "library" | "chat">("home");
+    [view, setView] = useState<"home" | "library" | "builder" | "chat">("home");
   const [connectOpen, setConnectOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
     [settingsOpen, setSettingsOpen] = useState(false),
     [personaEditOpen, setPersonaEditOpen] = useState(false);
+  const [professionSetup, setProfessionSetup] = useState<{ role: string; focus: string } | null>(null);
+  const [professionError, setProfessionError] = useState("");
+  const [setupConnecting, setSetupConnecting] = useState(false);
+  const [contextDetailsOpen, setContextDetailsOpen] = useState(false);
+  const [requestedContextId, setRequestedContextId] = useState<string>();
+  const [turnIssue, setTurnIssue] = useState<TurnIssue | null>(null);
+  const [checkingTurn, setCheckingTurn] = useState(false);
+  const [showLatest, setShowLatest] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null),
     [renameTitle, setRenameTitle] = useState(""),
     [renameError, setRenameError] = useState(""),
@@ -290,8 +315,7 @@ export function HarnessApp() {
     [showFocus, setShowFocus] = useState(false),
     [compiling, setCompiling] = useState(false),
     [draft, setDraft] = useState(""),
-    [query, setQuery] = useState(""),
-    [filter, setFilter] = useState("All experts");
+    [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false),
     [switching, setSwitching] = useState(false),
     [usage, setUsage] = useState<{
@@ -307,6 +331,7 @@ export function HarnessApp() {
     input = useRef<HTMLTextAreaElement>(null),
     upload = useRef<HTMLInputElement>(null),
     roleInput = useRef<HTMLInputElement>(null),
+    professionTrigger = useRef<HTMLElement | null>(null),
     composerRef = useRef<HTMLDivElement>(null),
     conversationRef = useRef<HTMLDivElement>(null);
   const { theme, toggleTheme, sidebarOpen, setSidebar, sidebarPinned, setSidebarPinned } = useUI();
@@ -325,14 +350,19 @@ export function HarnessApp() {
     viewEpoch = useRef(0),
     turnEpoch = useRef(0),
     archivesEpoch = useRef(0);
+  const followsLatest = useRef(true);
+  const previousScrollTop = useRef(0);
   contextRef.current = { chatId: chat?.id || "", connectionId, modelId, view };
+  const currentIssue = view === "chat" && turnIssue?.conversationId === chat?.id ? turnIssue : null;
   const selected = data?.connections.find((c) => c.id === connectionId),
     model = selected?.models.find((m) => m.id === modelId);
+  const professionConnection = model ? selected : data?.connections.find((connection) => connection.models.length);
+  const professionModel = model || professionConnection?.models[0];
   const refresh = useCallback(async (canApply: () => boolean = () => true) => {
     const result = await api<Bootstrap>("/api/bootstrap");
     if (!canApply()) return result;
     setData(result);
-    if (!contextRef.current.chatId) {
+    if (contextRef.current.view !== "chat") {
       const selected =
         result.connections.find(
           (c) => c.id === contextRef.current.connectionId,
@@ -389,6 +419,7 @@ export function HarnessApp() {
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (professionSetup || contextDetailsOpen) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setSidebar(false);
@@ -422,12 +453,31 @@ export function HarnessApp() {
     return () => resize.disconnect();
   }, [view, chat?.id]);
   useEffect(() => {
-    if (chat?.messages.length)
-      bottom.current?.scrollIntoView({
-        behavior: busy ? "instant" : "smooth",
-        block: "end",
-      });
-  }, [chat?.messages, busy]);
+    followsLatest.current = true;
+    setShowLatest(false);
+    if (view !== "chat") return;
+    const readPosition = () => {
+      const top = window.scrollY;
+      const composer = composerRef.current?.getBoundingClientRect();
+      const end = bottom.current?.getBoundingClientRect();
+      const nearBottom = composer && end && end.bottom <= composer.top + 120;
+      if (nearBottom) followsLatest.current = true;
+      else if (top < previousScrollTop.current) followsLatest.current = false;
+      previousScrollTop.current = top;
+      setShowLatest(!followsLatest.current);
+    };
+    window.addEventListener("scroll", readPosition, { passive: true });
+    return () => window.removeEventListener("scroll", readPosition);
+  }, [view, chat?.id]);
+  useEffect(() => {
+    if (view === "chat" && chat?.messages.length && followsLatest.current) goToLatest();
+  }, [view, chat?.messages, busy, currentIssue]);
+  function goToLatest() {
+    followsLatest.current = true;
+    setShowLatest(false);
+    bottom.current?.scrollIntoView({ behavior: "instant", block: "end" });
+    previousScrollTop.current = window.scrollY;
+  }
   function clearFiles() {
     uploadEpoch.current++;
     setAttachments([]);
@@ -454,6 +504,7 @@ export function HarnessApp() {
     viewEpoch.current++;
     clearFiles();
     setChat(null);
+    setContextDetailsOpen(false);
     setView("home");
     setRole("");
     setFocus("");
@@ -472,6 +523,27 @@ export function HarnessApp() {
     setUsage(null);
     setEditId(null);
     setSidebar(false);
+  }
+  function openContextBuilder(contextId?: string) {
+    if (navigationBlocked()) return;
+    viewEpoch.current++;
+    if (!model) {
+      const available = data?.connections.find((connection) => connection.models.length);
+      if (available) {
+        setConnectionId(available.id);
+        setModelId(available.models[0].id);
+      }
+    }
+    setRequestedContextId(contextId);
+    setView("builder");
+    setSidebar(false);
+  }
+  function resumeConversation() {
+    if (!chat || navigationBlocked()) return;
+    viewEpoch.current++;
+    setConnectionId(chat.connectionId || "");
+    setModelId(chat.modelId);
+    setView("chat");
   }
   async function openConversation(id: string) {
     if (navigationBlocked()) return;
@@ -502,9 +574,9 @@ export function HarnessApp() {
     const mid = rest.join("::");
     if (!cid || !mid || navigationBlocked()) return;
     setSwitching(true);
-    clearFiles();
+    if (view !== "builder") clearFiles();
     try {
-      if (chat) {
+      if (view === "chat" && chat) {
         await api(`/api/conversations/${chat.id}`, "PATCH", {
           connectionId: cid,
           modelId: mid,
@@ -513,56 +585,99 @@ export function HarnessApp() {
           s?.id === chat.id ? { ...s, connectionId: cid, modelId: mid } : s,
         );
       }
-      clearFiles();
+      if (view !== "builder") clearFiles();
       setConnectionId(cid);
       setModelId(mid);
-      toast.success("Model selected. Your expert stays the same.");
+      toast.success(view === "builder" ? "Model selected for your next conversation." : "Model selected.");
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
       setSwitching(false);
     }
   }
-  async function startExpert(roleName = role, focusText = focus) {
-    if (busy || compiling || switching) return;
+  function rememberConversation(conversation: Conversation) {
+    setData((current) => current ? {
+      ...current,
+      conversations: [conversation, ...current.conversations.filter((item) => item.id !== conversation.id)].slice(0, 100),
+    } : current);
+  }
+  function showNewConversation(detail: ConversationDetail, firstTask = "") {
+    clearFiles();
+    setChat(detail);
+    setConnectionId(detail.connectionId || "");
+    setModelId(detail.modelId);
+    setView("chat");
+    setContextDetailsOpen(false);
+    setPersonaEditOpen(false);
+    setDraft(firstTask);
+    setUsage(null);
+    setEditId(null);
+    const { persona, messages: _messages, initialGoal: _goal, ...conversation } = detail;
+    setData((current) => current ? {
+      ...current,
+      personas: [persona, ...current.personas.filter((item) => item.id !== persona.id)].slice(0, 100),
+      conversations: [conversation, ...current.conversations.filter((item) => item.id !== conversation.id)].slice(0, 100),
+    } : current);
+    setTimeout(() => input.current?.focus(), 100);
+  }
+  async function runSavedContext(id: string, goal: string): Promise<boolean> {
+    if (contextRef.current.view !== "builder" || navigationBlocked()) return false;
+    if (!selected || !model) {
+      setConnectOpen(true);
+      return false;
+    }
+    const epoch = ++viewEpoch.current;
+    setSwitching(true);
+    try {
+      const detail = await api<ConversationDetail>(`/api/contexts/${id}/run`, "POST", { connectionId, modelId });
+      if (viewEpoch.current !== epoch) return false;
+      showNewConversation(detail, detail.initialGoal ?? goal);
+      return true;
+    } finally {
+      setSwitching(false);
+    }
+  }
+  function prepareExpert(roleName = role, focusText = focus) {
+    if (navigationBlocked()) return;
     if (!roleName.trim()) {
       roleInput.current?.focus();
       return;
     }
-    if (!selected || !modelId) {
-      setRole(roleName);
-      setFocus(focusText);
+    professionTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPersonaEditOpen(false);
+    setProfessionError("");
+    setProfessionSetup({ role: roleName.trim(), focus: focusText.trim() });
+  }
+  async function startExpert(brief?: ProfessionBrief) {
+    if (!professionSetup || busy || compiling || switching) return;
+    if (!professionConnection || !professionModel) {
+      setSetupConnecting(true);
       setConnectOpen(true);
       return;
     }
     const epoch = ++viewEpoch.current;
-    clearFiles();
+    setProfessionError("");
     setCompiling(true);
     try {
       const persona = await api<Persona>("/api/personas", "POST", {
-        role: roleName.trim(),
-        focus: focusText.trim(),
-        connectionId,
-        modelId,
+        ...professionSetup,
+        connectionId: professionConnection.id,
+        modelId: professionModel.id,
+        ...(brief && { brief }),
       });
       const conversation = await api<Conversation>(
         "/api/conversations",
         "POST",
-        { personaId: persona.id, connectionId, modelId },
+        { personaId: persona.id, connectionId: professionConnection.id, modelId: professionModel.id },
       );
       const detail = await api<ConversationDetail>(
         `/api/conversations/${conversation.id}`,
       );
       if (viewEpoch.current !== epoch) return;
-      setChat(detail);
-      setView("chat");
-      setPersonaEditOpen(false);
-      setDraft("");
-      setEditId(null);
-      await refresh();
-      setTimeout(() => input.current?.focus(), 100);
+      setProfessionSetup(null);
+      showNewConversation(detail, brief?.goal);
     } catch (e) {
-      toast.error((e as Error).message);
+      setProfessionError((e as Error).message);
     } finally {
       setCompiling(false);
     }
@@ -572,7 +687,7 @@ export function HarnessApp() {
     message = draft,
     messageId?: string,
   ) {
-    if (!chat || busy || compiling || switching) return;
+    if (!chat || busy || compiling || switching || currentIssue?.recovery === "check") return;
     if (!selected || !model) {
       toast.error("Choose a connected model before sending a message.");
       return;
@@ -610,11 +725,15 @@ export function HarnessApp() {
       );
       return;
     }
-    const conversationId = chat.id,
-      savedDraft = draft,
-      prior = chat.messages;
-    const epoch = ++turnEpoch.current,
-      navigation = viewEpoch.current;
+    const conversationId = chat.id;
+    const savedDraft = draft;
+    const prior = chat.messages;
+    const pendingUserId = action === "regenerate" ? undefined :
+      (action === "send" && currentIssue?.recovery === "draft" && currentIssue.sent?.draft === savedDraft
+        ? currentIssue.sent.id
+        : crypto.randomUUID());
+    const epoch = ++turnEpoch.current;
+    const navigation = viewEpoch.current;
     const currentTurn = () =>
       turnEpoch.current === epoch &&
       viewEpoch.current === navigation &&
@@ -624,41 +743,45 @@ export function HarnessApp() {
       const index = messages.findIndex((m) => m.id === messageId);
       if (index < 0) return;
       messages = messages.slice(0, index);
-    }
-    if (action === "regenerate") {
+    } else if (action === "regenerate") {
       const index = messages.findLastIndex((m) => m.role === "user");
+      if (index < 0) return;
       messages = messages.slice(0, index + 1);
-    } else
-      messages.push({
-        id: crypto.randomUUID(),
-        role: "user",
-        content,
-        attachments: turnAttachments,
-      });
+    }
+    if (pendingUserId) {
+      messages.push({ id: pendingUserId, role: "user", content, attachments: turnAttachments });
+    }
     const pendingId = crypto.randomUUID();
-    messages.push({
-      id: pendingId,
-      role: "assistant",
-      content: "",
-      status: "streaming",
-    });
+    messages.push({ id: pendingId, role: "assistant", content: "", status: "streaming" });
     setChat({ ...chat, messages });
+    if (action === "send") goToLatest();
+    setTurnIssue(null);
     setBusy(true);
-    setDraft("");
+    if (action === "send") setDraft("");
     setEditId(null);
     setUsage(null);
     const abort = new AbortController();
     controller.current = abort;
-    let complete = false,
-      reply = "",
-      terminalStatus = "failed";
+    let complete = false;
+    let reply = "";
+    let delivery: "unknown" | "saved" | "rejected" = "unknown";
+    let committed: CommittedTurn | undefined;
+    let renderFrame = 0;
+    let issue: TurnIssue | null = null;
+
+    function paintReply() {
+      renderFrame = 0;
+      const visibleText = reply;
+      setChat((current) => current?.id === conversationId && currentTurn() ? {
+        ...current,
+        messages: current.messages.map((m) => m.id === pendingId ? { ...m, content: visibleText } : m),
+      } : current);
+    }
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Harness-Request": "1",
-        },
+        headers: apiHeaders("POST", true),
         credentials: "same-origin",
         signal: abort.signal,
         body: JSON.stringify({
@@ -666,128 +789,132 @@ export function HarnessApp() {
           message: action === "regenerate" ? undefined : content,
           action,
           messageId,
+          clientMessageId: action === "send" ? pendingUserId : undefined,
           attachments: turnAttachments,
         }),
       });
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error?.message || "The model could not respond.");
+        const body = await response.json().catch(() => ({}));
+        const code = body.error?.code;
+        if (code === "message_already_sent") delivery = "saved";
+        else if (response.status < 500 && code !== "generation_active") delivery = "rejected";
+        throw new ChatResponseError(body.error?.message || "The model could not respond.", code);
       }
-      if (!response.body)
-        throw Error("Streaming is unavailable. Please try again.");
-      const reader = response.body.getReader(),
-        decoder = new TextDecoder();
-      let buffer = "";
-      function frame(raw: string) {
-        let event = "message",
-          str = "";
-        for (const line of raw.split("\n")) {
-          if (line.startsWith("event:")) event = line.slice(6).trim();
-          if (line.startsWith("data:")) str += line.slice(5).trimStart();
-        }
-        if (!str) return;
-        const payload = JSON.parse(str);
-        if (event === "text") {
+      if (!response.body) throw new Error("Streaming is unavailable. Please try again.");
+      for await (const { event, payload } of chatFrames(response.body)) {
+        if (event === "accepted" && action === "send" && payload.message?.id === pendingUserId) {
+          delivery = "saved";
+          const stamp = payload.message;
+          messages = messages.map((m) => m.id === pendingUserId ? { ...m, ...stamp } : m);
+        } else if (event === "text") {
           reply += payload.text;
-          setChat((current) =>
-            current?.id === conversationId && currentTurn()
-              ? {
-                  ...current,
-                  messages: current.messages.map((m) =>
-                    m.id === pendingId ? { ...m, content: reply } : m,
-                  ),
-                }
-              : current,
-          );
-        }
-        if (event === "usage" && currentTurn()) setUsage(payload);
-        if (event === "error") throw Error(payload.message);
-        if (event === "done") {
+          if (!renderFrame) renderFrame = requestAnimationFrame(paintReply);
+        } else if (event === "usage" && currentTurn()) {
+          setUsage(payload);
+        } else if (event === "error") {
+          throw new ChatResponseError(payload.message, payload.code);
+        } else if (event === "done") {
           complete = true;
-          if (payload.truncatedTurns)
-            toast(
-              "Earlier turns were shortened to fit this model’s context window.",
-            );
+          if (payload.committed?.conversation?.id === conversationId) committed = payload.committed;
+          if (payload.truncatedTurns && currentTurn()) toast("Earlier turns were shortened to fit this model’s context window.");
         }
       }
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        buffer += decoder
-          .decode(next.value, { stream: true })
-          .replace(/\r\n/g, "\n");
-        let index;
-        while ((index = buffer.indexOf("\n\n")) >= 0) {
-          const raw = buffer.slice(0, index);
-          buffer = buffer.slice(index + 2);
-          frame(raw);
-        }
-      }
-      buffer += decoder.decode();
-      if (buffer.trim()) frame(buffer);
-      if (!complete)
-        throw Error("The response ended early. You can regenerate it.");
-      terminalStatus = "complete";
-      if (currentTurn()) clearFiles();
-    } catch (e) {
-      if (abort.signal.aborted || (e as Error).name === "AbortError") {
-        terminalStatus = "cancelled";
-        if (currentTurn())
-          toast(
-            action === "send"
-              ? "Response stopped."
-              : "Response stopped. Previous messages restored.",
-          );
-      } else {
-        if (currentTurn()) {
-          toast.error((e as Error).message);
-          if (!reply && action === "send") setDraft(savedDraft);
+      if (!complete) throw new Error("The response ended early.");
+    } catch (error) {
+      if (!complete) {
+        const stopped = abort.signal.aborted || (error as Error).name === "AbortError";
+        const description = stopped
+          ? action === "send" ? "Response stopped." : "Response stopped. Previous messages restored."
+          : (error as Error).message || "The response could not complete.";
+        issue = {
+          conversationId,
+          message: description,
+          code: error instanceof ChatResponseError ? error.code : undefined,
+          recovery: action === "edit" ? "edit" : action === "regenerate" || delivery === "saved" ? "retry"
+            : delivery === "rejected" ? "draft" : "check",
+          sent: action === "send" && pendingUserId ? { id: pendingUserId, draft: savedDraft } : undefined,
+        };
+        if (currentTurn() && action === "send" && delivery !== "saved") {
+          setDraft((current) => current || savedDraft);
         }
       }
     } finally {
+      if (renderFrame) cancelAnimationFrame(renderFrame);
       if (!complete) abort.abort();
-      setChat((current) =>
-        current?.id === conversationId && currentTurn()
-          ? {
-              ...current,
-              messages:
-                !complete && action !== "send"
-                  ? prior
-                  : current.messages.map((m) =>
-                      m.id === pendingId
-                        ? {
-                            ...m,
-                            status: terminalStatus,
-                            content:
-                              reply ||
-                              (terminalStatus === "cancelled"
-                                ? "Response stopped."
-                                : "The response could not complete. You can regenerate it."),
-                          }
-                        : m,
-                    ),
-            }
-          : current,
-      );
       if (currentTurn()) {
+        const terminal = committed;
+        setChat((current) => {
+          if (current?.id !== conversationId || !currentTurn()) return current;
+          const result = complete ? messages.map((m) => {
+            if (m.id === pendingId) return { ...m, status: "complete", ...terminal?.assistant, content: reply };
+            if (m.id === pendingUserId && terminal?.user) return { ...m, ...terminal.user };
+            return m;
+          }) : action === "send" && delivery === "saved"
+            ? messages.flatMap((m) => m.id !== pendingId ? [m] : reply ? [{
+                ...m, content: reply, status: issue?.message === "Response stopped." ? "cancelled" : "failed",
+              }] : [])
+            : prior;
+          return { ...current, ...terminal?.conversation, messages: result };
+        });
+        if (terminal) rememberConversation(terminal.conversation);
+        if (action === "send" && (complete || delivery === "saved")) clearFiles();
         if (!complete && action === "edit") {
           setEditId(messageId || null);
           setEditText(message);
         }
+        if (issue) setTurnIssue(issue);
         setBusy(false);
       }
       if (controller.current === abort) controller.current = null;
+    }
+    if (!committed && currentTurn()) {
       try {
-        const detail = await api<ConversationDetail>(
-          `/api/conversations/${conversationId}`,
-        );
-        setChat((current) =>
-          current?.id === conversationId && currentTurn() ? detail : current,
-        );
-        if (currentTurn()) await refresh(currentTurn);
+        const detail = await loadCurrentConversation(conversationId, currentTurn);
+        if (detail && issue?.sent) resolveSendIssue(issue, detail);
       } catch {
-        /* Keep the restored transcript if reconciliation cannot reach the server. */
+        // Keep the visible branch and retry controls when reconciliation is unavailable.
       }
+    }
+  }
+  async function loadCurrentConversation(id: string, canApply: () => boolean) {
+    const detail = await api<ConversationDetail>(`/api/conversations/${id}`);
+    if (!canApply()) return null;
+    setChat((current) => current?.id === id && canApply() ? detail : current);
+    const { messages: _messages, persona: _persona, initialGoal: _goal, ...conversation } = detail;
+    rememberConversation(conversation);
+    return detail;
+  }
+  function resolveSendIssue(issue: TurnIssue, detail: ConversationDetail) {
+    if (!issue.sent) return;
+    const sent = issue.sent;
+    const userIndex = detail.messages.findIndex((m) => m.id === sent.id);
+    if (userIndex < 0) {
+      if (issue.recovery === "check") setTurnIssue({ ...issue, recovery: "draft" });
+      return;
+    }
+    const hasAnswer = detail.messages.slice(userIndex + 1).some((m) =>
+      m.role === "assistant" && m.status !== "failed" && m.status !== "cancelled",
+    );
+    if (issue.recovery === "check") {
+      setDraft((current) => current === sent.draft ? "" : current);
+      clearFiles();
+    }
+    setTurnIssue(hasAnswer ? null : { ...issue, recovery: "retry" });
+  }
+  async function verifyDelivery(issue: TurnIssue) {
+    if (checkingTurn || busy) return;
+    const epoch = turnEpoch.current;
+    const navigation = viewEpoch.current;
+    const canApply = () => contextRef.current.chatId === issue.conversationId &&
+      turnEpoch.current === epoch && viewEpoch.current === navigation;
+    setCheckingTurn(true);
+    try {
+      const detail = await loadCurrentConversation(issue.conversationId, canApply);
+      if (detail) resolveSendIssue(issue, detail);
+    } catch {
+      if (canApply()) setTurnIssue({ ...issue, message: "Could not check whether your message was saved. Try checking again." });
+    } finally {
+      setCheckingTurn(false);
     }
   }
   async function addFiles(files: FileList | null) {
@@ -1022,6 +1149,8 @@ export function HarnessApp() {
       </div>
     );
   const persona = chat?.persona;
+  const showRetry = currentIssue?.recovery === "retry" ||
+    (!currentIssue && chat?.messages.at(-1)?.role === "user");
   return (
     <>
       <Toaster theme={theme} position="top-right" offset={84} visibleToasts={2}
@@ -1067,6 +1196,11 @@ export function HarnessApp() {
             New conversation<span>⌘ ⇧ O</span>
           </button>
           <div className="sidebar-nav">
+            <button className={view === "builder" ? "active" : ""} onClick={() => openContextBuilder()}
+              aria-current={view === "builder" ? "page" : undefined}>
+              <Layers3 size={16} />
+              Context Builder
+            </button>
             <button onClick={() => { setSidebar(false); setSearchOpen(true); }}>
               <Search size={16} />
               Search conversations<span>⌘ K</span>
@@ -1074,9 +1208,10 @@ export function HarnessApp() {
             <button
               className={view === "library" ? "active" : ""}
               onClick={openLibrary}
+              aria-current={view === "library" ? "page" : undefined}
             >
               <Compass size={16} />
-              Explore experts<span className="small-pill">12</span>
+              Explore professions<span className="small-pill">{PROFESSION_COUNT}</span>
             </button>
             <button onClick={openArchives}>
               <Archive size={16} />
@@ -1217,14 +1352,17 @@ export function HarnessApp() {
               {view === "chat" && persona && (
                 <button
                   className="persona-chip"
+                  aria-label={persona.context ? `Context ${persona.role}, version ${persona.context.revision}` : undefined}
+                  title={persona.context ? `View context version ${persona.context.revision}` : undefined}
                   onClick={() => {
+                    if (persona.context) { setContextDetailsOpen(true); return; }
                     setRole(persona.role);
                     setFocus(persona.focus);
                     setPersonaEditOpen(true);
                   }}
                 >
                   <ExpertAvatar role={persona.role} color={persona.color} />
-                  <span className="persona-chip-label">{persona.role}</span>
+                  <span className="persona-chip-label">{persona.role}{persona.context ? ` · v${persona.context.revision}` : ""}</span>
                   <Settings2 size={12} />
                 </button>
               )}
@@ -1249,6 +1387,7 @@ export function HarnessApp() {
                       onCloseAutoFocus={(event) => { if (renameTarget) event.preventDefault(); }}
                     >
                       <DropdownMenu.Label>Conversation</DropdownMenu.Label>
+                      <DropdownMenu.Item onSelect={() => setContextDetailsOpen(true)}><Layers3 size={15} />View context</DropdownMenu.Item>
                       <DropdownMenu.Item onSelect={() => beginRename(chat)}><Pencil size={15} />Rename</DropdownMenu.Item>
                       <DropdownMenu.Item onSelect={() => exportConversation(chat)} disabled={exporting}>
                         {exporting ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}Download Markdown
@@ -1268,10 +1407,15 @@ export function HarnessApp() {
               </button>
             </div>
           </header>
-          {view !== "chat" ? (
-            <div
-              className={`home-content ${view === "library" ? "library-page" : ""}`}
-            >
+          <ContextBuilder active={view === "builder"} request={api} onRun={runSavedContext}
+            requestedContextId={requestedContextId}
+            modelName={model?.name} busy={busy || compiling || switching}
+            onConnect={() => setConnectOpen(true)}
+            onBack={chat ? resumeConversation : undefined} />
+          {view === "builder" ? null : view === "library" ? (
+            <ProfessionLibrary onSelect={(roleName) => prepareExpert(roleName, "")} />
+          ) : view === "home" ? (
+            <div className="home-content">
               <div className="home-intro">
                 <div className="intro-symbol">
                   <Mark />
@@ -1280,19 +1424,9 @@ export function HarnessApp() {
                   A LITTLE CONTEXT. A WORLD OF POSSIBILITY.
                 </div>
                 <h1>
-                  {view === "library" ? (
-                    <>
-                      Good company for
-                      <br />
-                      every kind of curiosity.
-                    </>
-                  ) : (
-                    <>
-                      A mind for whatever’s
-                      <br />
-                      on yours.
-                    </>
-                  )}
+                  A mind for whatever’s
+                  <br />
+                  on yours.
                 </h1>
                 <p>
                   Choose your perspective. Make room for a better conversation.
@@ -1302,7 +1436,7 @@ export function HarnessApp() {
                 className="role-composer"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  startExpert();
+                  prepareExpert();
                 }}
               >
                 <label className="sr-only" htmlFor="role-input">
@@ -1360,6 +1494,11 @@ export function HarnessApp() {
                   </span>
                 </div>
               </form>
+              <button className="connect-nudge context-builder-entry" onClick={() => openContextBuilder()}>
+                <span className="nudge-icon"><Layers3 size={17} /></span>
+                <span><strong>Build a reusable context</strong><small>Set the goal, references, and output format for Claude or ChatGPT.</small></span>
+                <ArrowRight size={16} />
+              </button>
               {!data?.connections.length && (
                 <button
                   className="connect-nudge"
@@ -1379,56 +1518,16 @@ export function HarnessApp() {
               )}
               <section className="expert-section">
                 <div className="expert-section-heading">
-                  <h2>
-                    {view === "library"
-                      ? "Find a thinking partner"
-                      : "Or follow a little curiosity"}
-                  </h2>
-                  {view === "home" ? (
-                    <button onClick={openLibrary}>
-                      Explore all experts <ArrowRight size={13} />
-                    </button>
-                  ) : (
-                    <span>Or type any role above</span>
-                  )}
+                  <h2>Or follow a little curiosity</h2>
+                  <button onClick={openLibrary}>Browse {PROFESSION_COUNT} professions <ArrowRight size={13} /></button>
                 </div>
-                {view === "library" && (
-                  <div className="gallery-filters">
-                    {[
-                      "All experts",
-                      "Learn",
-                      "Explore",
-                      "Build",
-                      "Create",
-                      "Care",
-                      "Grow",
-                    ].map((v) => (
-                      <button
-                        key={v}
-                        className={filter === v ? "active" : ""}
-                        aria-pressed={filter === v}
-                        onClick={() => setFilter(v)}
-                      >
-                        {v}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <div className="preset-grid">
-                  {PRESETS.filter((p) =>
-                    view === "home"
-                      ? PRESETS.indexOf(p) < 8
-                      : filter === "All experts" || p.category === filter,
-                  ).map((p) => (
+                  {PRESETS.slice(0, 8).map((p) => (
                     <button
                       key={p.role}
                       className="preset-card"
                       style={{ "--card-tint": p.color } as CSSProperties}
-                      onClick={() => {
-                        setRole(p.role);
-                        setFocus("");
-                        startExpert(p.role, "");
-                      }}
+                      onClick={() => prepareExpert(p.role, "")}
                       disabled={compiling}
                     >
                       <span
@@ -1560,6 +1659,7 @@ export function HarnessApp() {
                                 <button
                                   onClick={() => streamChat("regenerate")}
                                   aria-label="Regenerate response"
+                                  disabled={currentIssue?.recovery === "check"}
                                 >
                                   <RotateCcw size={14} />
                                 </button>
@@ -1573,6 +1673,23 @@ export function HarnessApp() {
                 <div className="conversation-end" ref={bottom} />
               </div>
               <div className="composer-zone" ref={composerRef}>
+                {showLatest && <Button type="button" variant="outline" size="sm" className="jump-latest" onClick={goToLatest}>
+                  <ArrowDown size={15} /> Jump to latest
+                </Button>}
+                {!busy && (currentIssue || showRetry) && (
+                  <div className="turn-notice" role={currentIssue ? "alert" : "status"}>
+                    <AlertCircle size={16} aria-hidden="true" />
+                    <p>{currentIssue?.message || "Your message is saved. Try the reply again when you’re ready."}</p>
+                    <div className="turn-notice-actions">
+                      {currentIssue?.code === "sign_in_required" && <Button size="sm" variant="outline" onClick={() => setConnectOpen(true)}>Reconnect account</Button>}
+                      {currentIssue?.code === "plan_limit" && <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage plan usage</a>}
+                      {currentIssue?.recovery === "check" && <Button size="sm" variant="outline" disabled={checkingTurn} onClick={() => void verifyDelivery(currentIssue)}>
+                        {checkingTurn ? "Checking…" : "Check message status"}
+                      </Button>}
+                      {showRetry && <Button size="sm" variant="outline" onClick={() => void streamChat("regenerate")}>Retry reply</Button>}
+                    </div>
+                  </div>
+                )}
                 <div className="composer-box">
                   <div className="attachment-list">
                     {attachments.map((a, i) => (
@@ -1632,7 +1749,7 @@ export function HarnessApp() {
                         className="icon-button"
                         onClick={() => upload.current?.click()}
                         aria-label="Attach image or text file"
-                        disabled={busy || switching || compiling}
+                        disabled={busy || switching || compiling || currentIssue?.recovery === "check"}
                       >
                         <Paperclip size={18} />
                       </button>
@@ -1655,9 +1772,9 @@ export function HarnessApp() {
                         size="icon"
                         onClick={() => streamChat()}
                         disabled={
-                          !draft.trim() &&
+                          currentIssue?.recovery === "check" || (!draft.trim() &&
                           !attachments.length &&
-                          !documents.length
+                          !documents.length)
                         }
                         aria-label="Send message"
                       >
@@ -1679,6 +1796,7 @@ export function HarnessApp() {
                 <input
                   hidden
                   ref={upload}
+                  aria-label="Conversation attachments"
                   type="file"
                   multiple
                   accept={
@@ -1693,9 +1811,23 @@ export function HarnessApp() {
           )}
         </main>
       </div>
+      {chat && <ContextDetails open={contextDetailsOpen && view === "chat"} onOpenChange={setContextDetailsOpen}
+        conversationId={chat.id} request={api} onOpenBuilder={(id) => { setContextDetailsOpen(false); openContextBuilder(id); }} />}
+      {professionSetup && (
+        <ProfessionSetup {...professionSetup} open={!setupConnecting} busy={compiling} error={professionError}
+          modelLabel={professionConnection && professionModel ? `${providerName(professionConnection.provider)} · ${professionModel.name}` : undefined}
+          canStart={!!professionModel} onStart={startExpert} onOpenChange={(open) => {
+            if (open || compiling || setupConnecting) return;
+            setProfessionSetup(null);
+            requestAnimationFrame(() => professionTrigger.current?.focus({ preventScroll: true }));
+          }} />
+      )}
       <Connections
         open={connectOpen}
-        onOpenChange={setConnectOpen}
+        onOpenChange={(open) => {
+          setConnectOpen(open);
+          if (!open) setSetupConnecting(false);
+        }}
         connections={data?.connections || []}
         onSaved={async (c) => {
           await refresh();
@@ -1703,18 +1835,18 @@ export function HarnessApp() {
           const next = selectionAfterConnectionSave(
             { connectionId: current.connectionId, modelId: current.modelId },
             c,
-            !!current.chatId,
+            current.view === "chat",
           );
-          if (!current.chatId) {
-            clearFiles();
+          if (current.view !== "chat") {
+            if (current.view !== "builder") clearFiles();
             setConnectionId(next.connectionId);
             setModelId(next.modelId);
           }
         }}
         onRemoved={async (id) => {
           if (id === contextRef.current.connectionId) {
-            clearFiles();
-            if (!contextRef.current.chatId) {
+            if (contextRef.current.view !== "builder") clearFiles();
+            if (contextRef.current.view !== "chat") {
               setConnectionId("");
               setModelId("");
             }
@@ -1852,7 +1984,7 @@ export function HarnessApp() {
           className="simple-form"
           onSubmit={(e) => {
             e.preventDefault();
-            startExpert();
+            prepareExpert();
           }}
         >
           <label>

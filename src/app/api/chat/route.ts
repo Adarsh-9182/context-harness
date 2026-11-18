@@ -12,13 +12,13 @@ import {
   prepareTurn,
   commitTurn,
   insertMessage,
+  requireUnsentMessage,
 } from "@/lib/server/service";
 import { connectionCredential } from "@/lib/server/account-connections";
 import { db } from "@/lib/server/db";
 import { consumeRateLimit } from "@/lib/server/rate-limit";
 import { logEvent } from "@/lib/server/logger";
 import {
-  fitContext,
   DisclosureGuard,
   isDisclosureRequest,
   DISCLOSURE_REFUSAL,
@@ -38,22 +38,17 @@ export async function POST(request: Request) {
     await consumeRateLimit(user.id, "chat");
     const input = await parseJson(request, chatSchema);
     lock = `${user.id}:${input.conversationId}`;
-    if (active.has(lock))
+    if (active.has(lock)) {
+      if (input.clientMessageId) await requireUnsentMessage(user.id, input.conversationId, input.clientMessageId);
       throw new AppError(
         409,
         "generation_active",
         "This conversation is already responding. Stop it before sending another message.",
       );
+    }
     active.add(lock);
     acquired = true;
     const turn = await prepareTurn(user.id, input);
-    const maxTokens = Math.min(turn.model.maxOutputTokens, 4096);
-    const fitted = fitContext(
-      turn.persona.compiled_prompt,
-      turn.messages,
-      turn.model.contextWindow,
-      maxTokens,
-    );
     const abort = new AbortController();
     const signal = AbortSignal.any([request.signal, abort.signal]);
     const encoder = new TextEncoder();
@@ -79,6 +74,8 @@ export async function POST(request: Request) {
         );
         void (async () => {
           try {
+            if (signal.aborted) throw new AppError(499, "cancelled", "Response stopped.");
+            if (turn.accepted) emit("accepted", { message: turn.accepted });
             if (isDisclosureRequest(turn.latestUser)) {
               output = DISCLOSURE_REFUSAL;
               emit("text", { text: output });
@@ -92,9 +89,9 @@ export async function POST(request: Request) {
               for await (const chunk of provider.stream({
                 apiKey: await connectionCredential(turn.connection),
                 model: turn.model.id,
-                systemPrompt: turn.persona.compiled_prompt,
-                messages: fitted.messages,
-                maxTokens,
+                systemPrompt: turn.systemPrompt,
+                messages: turn.fitted.messages,
+                maxTokens: turn.maxTokens,
                 signal,
               })) {
                 if (signal.aborted)
@@ -133,7 +130,7 @@ export async function POST(request: Request) {
                   "The model returned no text. Try regenerating or select another model.",
                 );
             }
-            const messageId = await commitTurn(
+            const committed = await commitTurn(
               turn,
               output,
               status,
@@ -141,9 +138,10 @@ export async function POST(request: Request) {
             );
             emit("usage", { inputTokens, outputTokens });
             emit("done", {
-              messageId,
+              messageId: committed.assistant.id,
               conversationId: turn.conversation.id,
-              truncatedTurns: fitted.dropped,
+              truncatedTurns: turn.fitted.dropped,
+              committed,
             });
           } catch (error) {
             status = signal.aborted ? "cancelled" : "failed";

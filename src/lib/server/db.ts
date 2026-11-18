@@ -41,6 +41,13 @@ CREATE INDEX IF NOT EXISTS provider_connections_user ON provider_connections(use
 CREATE TABLE IF NOT EXISTS chatgpt_registrations (
  user_id TEXT PRIMARY KEY REFERENCES users(id), client_id TEXT NOT NULL, subject TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS contexts (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL,
+ goal TEXT NOT NULL, instructions TEXT NOT NULL, reference_text TEXT NOT NULL, output_format TEXT NOT NULL,
+ revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS contexts_user ON contexts(user_id, updated_at DESC, id);
 CREATE TABLE IF NOT EXISTS personas (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), role TEXT NOT NULL,
  focus TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, cache_key TEXT NOT NULL,

@@ -1,0 +1,15 @@
+.body { padding: 16px 23px 23px; }
+.summary { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--hover); border-radius: 12px; overflow-wrap: anywhere; }
+.summary strong { display: block; font-size: 14px; line-height: 1.4; }
+.summary p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+.symbol { display: grid; flex: 0 0 34px; width: 34px; height: 34px; place-items: center; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
+.fields { display: grid; gap: 15px; margin: 18px 0; }
+.fields dt { margin-bottom: 5px; font-size: 12px; font-weight: 600; }
+.fields dd { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.actions, .error { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.actions p, .error p, .status { font-size: 12px; color: var(--muted); }
+.actions p, .error p { max-width: 35ch; line-height: 1.5; }
+.status { display: flex; align-items: center; gap: 7px; min-height: 32px; }
+.status > svg { color: var(--accent); }
+@media (max-width: 480px) { .body { padding-inline: 16px; } }

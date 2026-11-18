@@ -2,7 +2,13 @@
 
 **Your model. A role for every kind of thinking.**
 
-Harness is a local AI chat app. Connect your **ChatGPT** or **Claude** account, type a role such as **Mathematician**, add an optional focus, and start a conversation. The backend compiles and applies a private persona; the UI shows only its role, focus, and greeting.
+Harness is a local AI chat app. Connect your **ChatGPT** or **Claude** account and choose from 500 searchable professions or type your own role. Before you start a chat, answer optional questions about your goal, relevant details, and expected output. Harness keeps those answers with the conversation when you switch models.
+
+## Build reusable context
+
+Open **Context Builder** to describe what you want the model to do. Give the context a name and a goal, then add any instructions, reference text, and desired output format. For example, a product planner could use a customer interview as reference material and return a prioritized feature brief with open questions.
+
+Save a context before connecting a model, or select Claude or ChatGPT and start a chat. Harness includes the saved brief with every model turn, even when it trims older messages or you switch providers. Edits create a new version for future chats. Existing conversations keep the version they started with.
 
 ## Start from a clean clone
 
@@ -19,7 +25,7 @@ The launcher installs lockfile-pinned dependencies if needed and starts **http:/
 1. Open the [local account picker](http://127.0.0.1:4318/#connect) or select **Your models** in the sidebar. Choose **Connect with ChatGPT** or **Connect with Claude**.
 2. Complete sign-in in your browser. For ChatGPT, allow Harness to use your plan. Claude uses its official local client and a separate Harness profile.
 3. Choose a model. ChatGPT models come from the signed-in account's catalog; Claude uses the account default selected by the official client.
-4. Type a role and optionally add a focus such as “number theory, for a beginner.” Preparing a role and chatting consume your account's usage allowance.
+4. Open **Explore professions** to browse by category or search for a role. You can also type a custom role. Answer any of the setup questions, or choose **Skip questions**. Preparing a role and chatting consume your account's usage allowance.
 5. Switch the connected account/model in the header; the conversation keeps its persona and history.
 
 Start both provider sign-ins from Harness at the local address above. The ChatGPT and Claude MCP settings are for adding external tools to those apps.

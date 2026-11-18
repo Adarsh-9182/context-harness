@@ -1,6 +1,6 @@
 import { requestUser } from "@/lib/server/auth";
 import { requireMutation, parseJson, errorResponse } from "@/lib/server/http";
-import { bootstrap, createPersona } from "@/lib/server/service";
+import { createPersona, listPersonas } from "@/lib/server/service";
 import { personaInputSchema } from "@/lib/server/persona";
 import { consumeRateLimit } from "@/lib/server/rate-limit";
 export const runtime = "nodejs";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     return Response.json(
-      (await bootstrap(await requestUser(request))).personas,
+      await listPersonas((await requestUser(request)).id),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

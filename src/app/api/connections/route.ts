@@ -1,7 +1,7 @@
 import { requestUser } from "@/lib/server/auth";
 import { requireMutation, parseJson, errorResponse } from "@/lib/server/http";
 import {
-  bootstrap,
+  listConnections,
   connectionSchema,
 } from "@/lib/server/service";
 import { requireLocalAccounts, startAccountLogin } from "@/lib/server/account-logins";
@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     return Response.json(
-      (await bootstrap(await requestUser(request))).connections,
+      await listConnections((await requestUser(request)).id),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

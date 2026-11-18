@@ -12,8 +12,18 @@ import { accountConnectionSchema } from "./account-logins";
 import { connectionCredential, disconnectAccount, isAccountProvider, publicAccountConnection } from "./account-connections";
 import { AppError } from "./http";
 import {
+  contextPersonaDefinition,
+  contextSnapshot,
+  getContext,
+  promptWithContext,
+  readContextSnapshot,
+} from "./contexts";
+import {
+  assemblePersona,
   compilePersona,
   personaInputSchema,
+  promptWithProfessionBrief,
+  readProfessionBrief,
   roleColor,
   TEMPLATE_VERSION,
   fitContext,
@@ -105,10 +115,17 @@ export const chatSchema = z
     message: z.string().trim().max(40_000).optional(),
     action: z.enum(["send", "regenerate", "edit"]).default("send"),
     messageId: z.string().uuid().optional(),
+    clientMessageId: z.string().uuid().transform((id) => id.toLowerCase()).optional(),
     attachments: z.array(attachmentSchema).max(3).default([]),
   })
   .strict()
   .superRefine((v, ctx) => {
+    if (v.clientMessageId && v.action !== "send")
+      ctx.addIssue({
+        code: "custom",
+        path: ["clientMessageId"],
+        message: "A client message ID is only used when sending a new message.",
+      });
     if (v.action !== "regenerate" && !v.message && !v.attachments.length)
       ctx.addIssue({
         code: "custom",
@@ -128,16 +145,20 @@ export const chatSchema = z
       });
   });
 
-export async function publicConnection(r: ConnectionRow) {
-  return publicAccountConnection(r);
+type PersonaSummaryRow = Pick<PersonaRow, "id" | "role" | "focus" | "opening_message" | "color">;
+function personaSummary(r: PersonaSummaryRow, context?: { id: string; revision: number }) {
+  return {
+    id: r.id,
+    role: r.role,
+    focus: r.focus,
+    openingMessage: r.opening_message,
+    color: r.color,
+    ...(context && { context: { id: context.id, revision: context.revision } }),
+  };
 }
-export const publicPersona = (r: PersonaRow) => ({
-  id: r.id,
-  role: r.role,
-  focus: r.focus,
-  openingMessage: r.opening_message,
-  color: r.color,
-});
+export function publicPersona(r: PersonaRow) {
+  return personaSummary(r, readContextSnapshot(r.definition));
+}
 export const publicConversation = (r: ConversationRow) => ({
   id: r.id,
   title: r.title,
@@ -146,13 +167,17 @@ export const publicConversation = (r: ConversationRow) => ({
   modelId: r.model_id,
   updatedAt: r.updated_at,
 });
-export const publicMessage = (r: MessageRow) => ({
+type MessageMetadataRow = Pick<MessageRow, "id" | "role" | "status" | "created_at">;
+const publicMessageMetadata = (r: MessageMetadataRow) => ({
   id: r.id,
   role: r.role,
-  content: r.content,
-  attachments: r.attachments ?? [],
   status: r.status,
   createdAt: r.created_at,
+});
+export const publicMessage = (r: MessageRow) => ({
+  ...publicMessageMetadata(r),
+  content: r.content,
+  attachments: r.attachments ?? [],
 });
 
 export async function ensureUser(user: UserIdentity) {
@@ -163,28 +188,47 @@ export async function ensureUser(user: UserIdentity) {
     [user.id, user.name, user.email ?? null],
   );
 }
+export async function listConnections(userId: string) {
+  const { rows } = await (await db()).query<ConnectionRow>(
+    "SELECT * FROM provider_connections WHERE user_id=$1 AND provider IN ('chatgpt','claude') ORDER BY created_at ASC,id ASC",
+    [userId],
+  );
+  return Promise.all(rows.map(async (row) => {
+    try {
+      return await publicAccountConnection(row);
+    } catch (error) {
+      if (!(error instanceof AppError) || error.code !== "sign_in_required") throw error;
+      return { id: row.id, provider: row.provider, name: row.name, models: row.models, accountLabel: "Reconnect this account" };
+    }
+  }));
+}
+
+export async function listPersonas(userId: string) {
+  const { rows } = await (await db()).query<PersonaSummaryRow & { context_id: string | null; context_revision: string | null }>(
+    `SELECT id,role,focus,opening_message,color,
+       definition->'context'->>'id' AS context_id,definition->'context'->>'revision' AS context_revision
+     FROM personas WHERE user_id=$1 ORDER BY created_at DESC,id ASC LIMIT 100`,
+    [userId],
+  );
+  return rows.map((row) => {
+    const revision = Number(row.context_revision);
+    return personaSummary(row, row.context_id && Number.isSafeInteger(revision) && revision > 0
+      ? { id: row.context_id, revision }
+      : undefined);
+  });
+}
+
 export async function bootstrap(user: UserIdentity) {
-  await ensureUser(user);
-  const database = await db();
   const [connections, personas, conversations] = await Promise.all([
-    database.query<ConnectionRow>(
-      "SELECT * FROM provider_connections WHERE user_id=$1 ORDER BY created_at ASC",
-      [user.id],
-    ),
-    database.query<PersonaRow>(
-      "SELECT * FROM personas WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100",
-      [user.id],
-    ),
-    database.query<ConversationRow>(
-      "SELECT * FROM conversations WHERE user_id=$1 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100",
-      [user.id],
-    ),
+    listConnections(user.id),
+    listPersonas(user.id),
+    listConversations(user.id),
   ]);
   return {
     user: { id: user.id, name: user.name, development: user.development === true },
-    connections: await Promise.all(connections.rows.filter(r => isAccountProvider(r.provider)).map(publicConnection)),
-    personas: personas.rows.map(publicPersona),
-    conversations: conversations.rows.map(publicConversation),
+    connections,
+    personas,
+    conversations,
   };
 }
 export async function getConnection(userId: string, id: string) {
@@ -231,16 +275,17 @@ export async function createPersona(
   await ensureUser(user);
   const connection = await getConnection(user.id, input.connectionId);
   const model = pickModel(connection, input.modelId);
+  const { brief } = input;
+  const cacheInput = [
+    user.id,
+    input.role.toLowerCase().trim(),
+    input.focus.toLowerCase().trim(),
+    connection.provider,
+    TEMPLATE_VERSION,
+  ];
+  if (brief) cacheInput.push(brief.goal, brief.details, brief.outputFormat);
   const cacheKey = createHash("sha256")
-    .update(
-      JSON.stringify([
-        user.id,
-        input.role.toLowerCase().trim(),
-        input.focus.toLowerCase().trim(),
-        connection.provider,
-        TEMPLATE_VERSION,
-      ]),
-    )
+    .update(JSON.stringify(cacheInput))
     .digest("hex");
   const existing = (
     await (
@@ -263,6 +308,7 @@ export async function createPersona(
       model,
       signal,
     });
+    const definition = brief ? { ...compiled.definition, professionBrief: brief } : compiled.definition;
     const id = randomUUID();
     await (
       await db()
@@ -276,7 +322,7 @@ export async function createPersona(
         connection.provider,
         cacheKey,
         compiled.systemPrompt,
-        JSON.stringify(compiled.definition),
+        JSON.stringify(definition),
         compiled.definition.opening_message,
         roleColor(input.role),
         TEMPLATE_VERSION,
@@ -316,29 +362,80 @@ export async function getPersona(userId: string, id: string) {
     );
   return row;
 }
+
+function personaSystemPrompt(persona: PersonaRow): string {
+  const brief = readProfessionBrief(persona.definition);
+  return brief
+    ? promptWithProfessionBrief(persona.compiled_prompt, brief)
+    : promptWithContext(persona.compiled_prompt, readContextSnapshot(persona.definition));
+}
+
+function assertPinnedContextFits(persona: PersonaRow, model: Model) {
+  const systemPrompt = personaSystemPrompt(persona);
+  if (systemPrompt !== persona.compiled_prompt) assertContextFits(systemPrompt, model);
+}
+
 export async function createConversation(
   user: UserIdentity,
   input: z.infer<typeof conversationSchema>,
 ) {
   const persona = await getPersona(user.id, input.personaId);
   const connection = await getConnection(user.id, input.connectionId);
-  pickModel(connection, input.modelId);
+  const model = pickModel(connection, input.modelId);
+  assertPinnedContextFits(persona, model);
+  return insertConversation(user.id, persona, connection.id, model.id);
+}
+
+async function insertConversation(userId: string, persona: PersonaRow, connectionId: string, modelId: string) {
   const id = randomUUID();
-  await (
-    await db()
-  ).query(
-    "INSERT INTO conversations (id,user_id,persona_id,connection_id,model_id,title) VALUES ($1,$2,$3,$4,$5,$6)",
-    [
-      id,
-      user.id,
-      persona.id,
-      connection.id,
-      input.modelId,
-      `${persona.role} conversation`,
-    ],
+  const { rows } = await (await db()).query<ConversationRow>(
+    `WITH conversation AS (
+       INSERT INTO conversations (id,user_id,persona_id,connection_id,model_id,title)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *
+     ), greeting AS (
+       INSERT INTO messages (id,conversation_id,role,content,status)
+       SELECT $7,id,'assistant',$8,'greeting' FROM conversation
+     )
+     SELECT * FROM conversation`,
+    [id, userId, persona.id, connectionId, modelId, `${persona.role} conversation`, randomUUID(), persona.opening_message],
   );
-  await insertMessage(id, "assistant", persona.opening_message, [], "greeting");
-  return publicConversation(await getConversation(user.id, id));
+  return publicConversation(rows[0]);
+}
+
+export async function runContext(userId: string, id: string, input: z.infer<typeof switchSchema>) {
+  const snapshot = contextSnapshot(await getContext(userId, id));
+  const connection = await getConnection(userId, input.connectionId);
+  const model = pickModel(connection, input.modelId);
+  // Custom context is data inside the system prompt, not an injected role label.
+  const { systemPrompt } = assemblePersona("Context assistant", "", contextPersonaDefinition);
+  assertContextFits(promptWithContext(systemPrompt, snapshot), model);
+  const database = await db();
+  const cacheKey = `context:${snapshot.id}:${snapshot.revision}:${TEMPLATE_VERSION}`;
+  const { rows } = await database.query<PersonaRow>(
+    `INSERT INTO personas (id,user_id,role,provider,cache_key,compiled_prompt,definition,opening_message,color,template_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id,cache_key) DO NOTHING RETURNING *`,
+    [randomUUID(), userId, snapshot.name, connection.provider, cacheKey, systemPrompt,
+      JSON.stringify({ ...contextPersonaDefinition, context: snapshot }), contextPersonaDefinition.opening_message,
+      roleColor(snapshot.name), TEMPLATE_VERSION],
+  );
+  const persona = rows[0] ?? (await database.query<PersonaRow>(
+    "SELECT * FROM personas WHERE user_id=$1 AND cache_key=$2",
+    [userId, cacheKey],
+  )).rows[0];
+  const conversation = await insertConversation(userId, persona, connection.id, model.id);
+  return { ...(await conversationDetail(userId, conversation.id)), initialGoal: snapshot.goal };
+}
+
+function assertContextFits(systemPrompt: string, model: Model) {
+  const maxTokens = Math.min(model.maxOutputTokens, 4096);
+  try {
+    fitContext(systemPrompt, [], model.contextWindow, maxTokens);
+  } catch (error) {
+    if (error instanceof AppError && error.code === "context_too_large") {
+      throw new AppError(400, "context_too_large", "Shorten this context or choose a model with a larger context window.");
+    }
+    throw error;
+  }
 }
 export async function getConversation(userId: string, id: string) {
   const row = (
@@ -400,9 +497,11 @@ export async function switchModel(
   id: string,
   input: z.infer<typeof switchSchema>,
 ) {
-  await getConversation(userId, id);
+  const conversation = await getConversation(userId, id);
   const connection = await getConnection(userId, input.connectionId);
-  pickModel(connection, input.modelId);
+  const model = pickModel(connection, input.modelId);
+  const persona = await getPersona(userId, conversation.persona_id);
+  assertPinnedContextFits(persona, model);
   await (
     await db()
   ).query(
@@ -451,6 +550,48 @@ export async function insertMessage(
   );
   return id;
 }
+
+function messageAlreadySent() {
+  return new AppError(409, "message_already_sent", "This message was already sent.");
+}
+
+export async function requireUnsentMessage(userId: string, conversationId: string, messageId: string) {
+  const existing = await (await db()).query(
+    `SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id
+     WHERE m.id=$1 AND m.role='user' AND c.id=$2 AND c.user_id=$3 AND c.deleted_at IS NULL`,
+    [messageId, conversationId, userId],
+  );
+  if (existing.rows.length) throw messageAlreadySent();
+}
+
+async function acceptMessage(userId: string, message: MessageRow, title: string) {
+  const accepted = await (await db()).query<{
+    id: string | null;
+    created_at: MessageRow["created_at"];
+  }>(
+    `WITH owned AS MATERIALIZED (
+      SELECT id FROM conversations WHERE id=$2 AND user_id=$5 AND deleted_at IS NULL FOR UPDATE
+    ), message AS (
+      INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at)
+      SELECT $1,id,'user',$3,$4::jsonb,'complete',${nextMessageTimestamp("$2")} FROM owned
+      ON CONFLICT (id) DO NOTHING RETURNING id,created_at
+    ), updated AS (
+      UPDATE conversations SET title=CASE WHEN title_edited THEN title ELSE $6 END,updated_at=clock_timestamp()
+      WHERE id IN (SELECT id FROM owned) AND EXISTS (SELECT 1 FROM message) RETURNING id
+    ) SELECT message.id,message.created_at FROM owned LEFT JOIN message ON TRUE`,
+    [message.id, message.conversation_id, message.content, JSON.stringify(message.attachments), userId, title],
+  );
+  const row = accepted.rows[0];
+  if (!row) throw new AppError(409, "conversation_unavailable", "This conversation is no longer available.");
+  if (!row.id) {
+    // The unique key can also collide with a message outside this chat. Only an
+    // owned user message in the requested conversation confirms an earlier send.
+    await requireUnsentMessage(userId, message.conversation_id, message.id);
+    throw new AppError(409, "message_id_conflict", "This message ID could not be used. Try sending it again.");
+  }
+  return publicMessageMetadata({ ...message, created_at: row.created_at });
+}
+
 export async function prepareTurn(
   userId: string,
   input: z.infer<typeof chatSchema>,
@@ -460,6 +601,8 @@ export async function prepareTurn(
   const model = pickModel(connection, conversation.model_id);
   const persona = await getPersona(userId, conversation.persona_id);
   let history = await getMessages(conversation.id);
+  if (input.clientMessageId && history.some((m) => m.role === "user" && m.id === input.clientMessageId))
+    throw messageAlreadySent();
   let removedIds: string[] = [];
   if (input.attachments.length && !model.supportsImages)
     throw new AppError(
@@ -499,7 +642,7 @@ export async function prepareTurn(
   }
   const newUser: MessageRow | undefined = input.action !== "regenerate"
     ? {
-      id: randomUUID(),
+      id: input.clientMessageId ?? randomUUID(),
       conversation_id: conversation.id,
       role: "user",
       content: input.message ?? "",
@@ -516,7 +659,7 @@ export async function prepareTurn(
       "This conversation is full. Start a new conversation with the same role.",
     );
   const messages: UnifiedMessage[] = history
-    .filter((m) => m.status !== "greeting" && m.status !== "failed")
+    .filter((m) => m.status !== "greeting" && m.status !== "failed" && m.status !== "cancelled")
     .map((m) => ({
       role: m.role,
       content:
@@ -528,27 +671,19 @@ export async function prepareTurn(
   // Validate the proposed transcript before any destructive edit or append.
   // A model switch to a smaller context must not erase the old answer when
   // regeneration or an edited replacement cannot fit.
-  fitContext(
-    persona.compiled_prompt,
+  const systemPrompt = personaSystemPrompt(persona);
+  const maxTokens = Math.min(model.maxOutputTokens, 4096);
+  const fitted = fitContext(
+    systemPrompt,
     messages,
     model.contextWindow,
-    Math.min(model.maxOutputTokens, 4096),
+    maxTokens,
   );
   const firstUser = history.find((m) => m.role === "user");
   const title = firstUser?.content.slice(0, 75) || `${persona.role} · Image`;
   // A new send is durable even if the model later fails. Replacements remain
   // staged until their complete, validated response can be committed atomically.
-  if (input.action === "send" && newUser) {
-    const database = await db();
-    await database.query(
-      `INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($1,$2,'user',$3,$4,'complete',${nextMessageTimestamp("$2")})`,
-      [newUser.id, conversation.id, newUser.content, JSON.stringify(newUser.attachments)],
-    );
-    await database.query("UPDATE conversations SET title=CASE WHEN title_edited THEN title ELSE $1 END,updated_at=NOW() WHERE id=$2", [
-      title,
-      conversation.id,
-    ]);
-  }
+  const accepted = input.action === "send" && newUser ? await acceptMessage(userId, newUser, title) : undefined;
   return {
     userId,
     action: input.action,
@@ -556,9 +691,12 @@ export async function prepareTurn(
     connection,
     persona,
     model,
-    messages,
+    systemPrompt,
+    maxTokens,
+    fitted,
     latestUser: history.findLast((m) => m.role === "user")?.content ?? "",
     title,
+    accepted,
     replacement: input.action === "send" ? undefined : { removedIds, newUser },
   };
 }
@@ -576,7 +714,13 @@ export async function commitTurn(
     throw new AppError(499, "cancelled", "Response stopped.");
   const messageId = randomUUID();
   const edited = turn.replacement?.newUser;
-  const result = await database.query<{ id: string }>(
+  const result = await database.query<ConversationRow & {
+    answer_id: string;
+    answer_status: string;
+    answer_created_at: MessageRow["created_at"];
+    edited_id: string | null;
+    edited_created_at: MessageRow["created_at"];
+  }>(
     `WITH owned AS MATERIALIZED (
       SELECT id FROM conversations
       WHERE id=$1 AND user_id=$10 AND deleted_at IS NULL FOR UPDATE
@@ -588,16 +732,18 @@ export async function commitTurn(
     ), edited AS (
       INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at)
       SELECT $3,$1,'user',$4,$5::jsonb,'complete',stamp FROM next_time
-      WHERE $6::boolean RETURNING id
+      WHERE $6::boolean RETURNING id,created_at
     ), answer AS (
       INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at)
       SELECT $7,$1,'assistant',$8,'[]'::jsonb,$9,
         stamp + CASE WHEN $6::boolean THEN INTERVAL '1 microsecond' ELSE INTERVAL '0' END
-      FROM next_time RETURNING id
+      FROM next_time RETURNING id,status,created_at
     ), updated AS (
       UPDATE conversations SET title=CASE WHEN title_edited THEN title ELSE $11 END,updated_at=clock_timestamp()
-      WHERE id IN (SELECT id FROM owned) RETURNING id
-    ) SELECT answer.id FROM answer CROSS JOIN updated`,
+      WHERE id IN (SELECT id FROM owned) RETURNING id,title,persona_id,connection_id,model_id,updated_at
+    ) SELECT updated.*,answer.id AS answer_id,answer.status AS answer_status,
+      answer.created_at AS answer_created_at,edited.id AS edited_id,edited.created_at AS edited_created_at
+      FROM answer CROSS JOIN updated LEFT JOIN edited ON TRUE`,
     [
       turn.conversation.id,
       turn.replacement?.removedIds ?? [],
@@ -612,11 +758,21 @@ export async function commitTurn(
       turn.title,
     ],
   );
-  if (!result.rows.length)
+  const row = result.rows[0];
+  if (!row)
     throw new AppError(
       409,
       "conversation_unavailable",
       "This conversation is no longer available.",
     );
-  return messageId;
+  const user = row.edited_id
+    ? publicMessageMetadata({ id: row.edited_id, role: "user", status: "complete", created_at: row.edited_created_at })
+    : turn.accepted;
+  return {
+    conversation: publicConversation(row),
+    assistant: publicMessageMetadata({
+      id: row.answer_id, role: "assistant", status: row.answer_status, created_at: row.answer_created_at,
+    }),
+    ...(user && { user }),
+  };
 }

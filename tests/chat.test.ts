@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   abortOnEnd: null as null | (() => void),
   resume: null as null | (() => void),
   modelName: "test-chat-model",
+  reply: "",
 }));
 vi.mock("../src/lib/providers", () => ({
   ProviderError: class ProviderError extends Error {},
@@ -54,6 +55,8 @@ vi.mock("../src/lib/providers", () => ({
         };
       } else if (mocks.leak) {
         yield { type: "text", text: system };
+      } else if (mocks.reply) {
+        yield { type: "text", text: mocks.reply };
       } else {
         if (mocks.failure === "before") throw Error("Upstream failed before text.");
         if (mocks.pause)
@@ -82,9 +85,12 @@ vi.mock("../src/lib/providers", () => ({
 }));
 
 import { GET as bootstrapRoute } from "../src/app/api/bootstrap/route";
-import { POST as connectionRoute } from "../src/app/api/connections/route";
-import { POST as personaRoute } from "../src/app/api/personas/route";
+import { GET as connectionsRoute, POST as connectionRoute } from "../src/app/api/connections/route";
+import { GET as personasRoute, POST as personaRoute } from "../src/app/api/personas/route";
 import { POST as conversationRoute } from "../src/app/api/conversations/route";
+import { GET as contextsRoute, POST as createContextRoute } from "../src/app/api/contexts/route";
+import { GET as contextRoute, PATCH as updateContextRoute } from "../src/app/api/contexts/[id]/route";
+import { POST as runContextRoute } from "../src/app/api/contexts/[id]/run/route";
 import {
   GET as detailRoute,
   PATCH as switchRoute,
@@ -93,7 +99,7 @@ import { POST as chatRoute } from "../src/app/api/chat/route";
 import { db, resetDbForTests } from "../src/lib/server/db";
 import { resetRateLimitsForTests } from "../src/lib/server/rate-limit";
 import { saveAccountConnection } from "../src/lib/server/account-connections";
-import { chatSchema, commitTurn, prepareTurn } from "../src/lib/server/service";
+import { chatSchema, commitTurn, insertMessage, prepareTurn } from "../src/lib/server/service";
 
 function req(
   path: string,
@@ -139,6 +145,7 @@ beforeEach(async () => {
   mocks.pauseAfterText = false;
   mocks.resume = null;
   mocks.abortOnEnd = null;
+  mocks.reply = "";
   await resetRateLimitsForTests();
 });
 
@@ -156,7 +163,8 @@ async function seededTranscript() {
 
 describe("server-proxied chat integration", () => {
   it("uses two signed-in accounts and encrypts credentials without returning them", async () => {
-    const models = [{ id: mocks.modelName, name: "Test chat model", contextWindow: 16000, maxOutputTokens: 4000, supportsImages: true, supportsTools: false }];
+    const standard = { id: mocks.modelName, name: "Test chat model", contextWindow: 16000, maxOutputTokens: 4000, supportsImages: true, supportsTools: false };
+    const models = [standard, { ...standard, id: "small-context-model", contextWindow: 4096, maxOutputTokens: 1024 }];
     openai = await saveAccountConnection("test-alice", {
       kind: "chatgpt", clientId: "fixture-client", subject: "fixture-user", accessToken: "example-account-access", refreshToken: "example-renewable-secret", idToken: "example-id-token", expiresAt: Date.now() + 3600000, scopes: ["resource.invoke", "chatgpt.tokens.use.direct"],
     }, models);
@@ -194,6 +202,108 @@ describe("server-proxied chat integration", () => {
     );
     expect(again.id).toBe(persona.id);
     expect(mocks.calls).toHaveLength(count);
+  });
+  it("pins pre-chat answers to the selected role and keeps them through a model switch", async () => {
+    const reference = "The course materials use a number line and mark every multiple of seven.";
+    const brief = {
+      goal: "Explain PRIME as written in the lesson.",
+      details: `${reference}\n`.repeat(65).trim(),
+      outputFormat: "A worked example.",
+    };
+    const input = { role: "Mathematician", connectionId: openai.id, modelId: mocks.modelName };
+    const create = (answers: unknown) => personaRoute(req("/api/personas", { ...input, brief: answers }));
+    const calls = mocks.calls.length;
+    expect((await body(await create({ details: "   " }))).id).toBe(persona.id);
+    expect((await create({ goal: "x".repeat(1201) })).status).toBe(400);
+    expect(mocks.calls).toHaveLength(calls);
+
+    const prepared = await body(await create(brief));
+    expect(prepared.id).not.toBe(persona.id);
+    expect(JSON.stringify(prepared)).not.toContain(reference);
+    expect((await body(await create({ ...brief, goal: `  ${brief.goal}  ` }))).id).toBe(prepared.id);
+    expect(mocks.calls).toHaveLength(calls + 1);
+    expect(JSON.stringify(mocks.calls.at(-1)?.messages)).not.toContain(reference);
+    const other = await body(await create({ ...brief, goal: brief.goal.replace("PRIME", "prime") }));
+    expect(other.id).not.toBe(prepared.id);
+
+    const conversationInput = { personaId: prepared.id, connectionId: openai.id, modelId: mocks.modelName };
+    const smallModel = { connectionId: openai.id, modelId: "small-context-model" };
+    expect((await conversationRoute(req("/api/conversations", { ...conversationInput, ...smallModel }))).status).toBe(400);
+    const created = await body(await conversationRoute(req("/api/conversations", conversationInput)));
+    const path = `/api/conversations/${created.id}`;
+    const context = { params: Promise.resolve({ id: created.id }) };
+    expect((await switchRoute(req(path, smallModel, "alice", "PATCH"), context)).status).toBe(400);
+    await body(await switchRoute(req(path, { connectionId: anthropic.id, modelId: mocks.modelName }, "alice", "PATCH"), context));
+    expect(JSON.stringify(await body(await detailRoute(req(path), context)))).not.toContain(reference);
+
+    mocks.reply = reference;
+    const response = await chatRoute(req("/api/chat", { conversationId: created.id, message: "Quote my lesson notes." }));
+    expect(await response.text()).toContain("event: done");
+    const modelCall = mocks.calls.at(-1)!;
+    expect(modelCall.provider).toBe("claude");
+    expect(modelCall.systemPrompt).toContain("tie important claims to a title, section, or short quote");
+    expect(JSON.parse(String(modelCall.systemPrompt).split("\n").at(-1)!)).toEqual(brief);
+    expect((await body(await detailRoute(req(path), context))).messages.at(-1).content).toBe(reference);
+  });
+  it("keeps contexts private and pins their inputs to each conversation across model switches", async () => {
+    const reference = 'The example product launched on an earlier date than the "phase two" milestone.';
+    const references = reference + "\nCase note.".repeat(1050);
+    const fields = {
+      name: "Release briefing",
+      goal: "Summarize what changed.",
+      instructions: "Use a neutral tone.",
+      references,
+      outputFormat: "Three bullets.",
+    };
+    const invalid = await createContextRoute(req("/api/contexts", { ...fields, name: "Bad\nname" }));
+    expect(invalid.status).toBe(400);
+    const created = await body(await createContextRoute(req("/api/contexts", fields)));
+    expect(created).toMatchObject({ ...fields, revision: 1 });
+    const path = `/api/contexts/${created.id}`;
+    const params = { params: Promise.resolve({ id: created.id }) };
+    const model = { connectionId: openai.id, modelId: mocks.modelName };
+    expect(await body(await contextsRoute(req("/api/contexts", undefined, "bob")))).toEqual([]);
+    expect((await contextRoute(req(path, undefined, "bob"), params)).status).toBe(404);
+    expect((await updateContextRoute(req(path, fields, "bob", "PATCH"), params)).status).toBe(404);
+    expect((await runContextRoute(req(`${path}/run`, model, "bob"), params)).status).toBe(404);
+    const list = await body(await contextsRoute(req("/api/contexts")));
+    expect(list).toContainEqual({ id: created.id, name: fields.name, goal: fields.goal, revision: 1, updatedAt: created.updatedAt });
+
+    const calls = mocks.calls.length;
+    const insufficientModel = { ...model, modelId: "small-context-model" };
+    expect((await runContextRoute(req(`${path}/run`, insufficientModel), params)).status).toBe(400);
+    const before = await body(await runContextRoute(req(`${path}/run`, model), params));
+    expect(before.persona).toMatchObject({ role: fields.name, context: { id: created.id, revision: 1 } });
+    expect(before.messages).toHaveLength(1);
+    expect(before.messages[0].status).toBe("greeting");
+    expect(JSON.stringify(before)).not.toContain(reference);
+    expect(mocks.calls).toHaveLength(calls);
+    const updated = await body(await updateContextRoute(req(path, { ...fields, references: "A newer reference." }, "alice", "PATCH"), params));
+    expect(updated.revision).toBe(2);
+    const after = await body(await runContextRoute(req(`${path}/run`, model), params));
+    expect(after.persona.context).toEqual({ id: created.id, revision: 2 });
+
+    const beforePath = `/api/conversations/${before.id}`;
+    const beforeParams = { params: Promise.resolve({ id: before.id }) };
+    expect((await switchRoute(req(beforePath, insufficientModel, "alice", "PATCH"), beforeParams)).status).toBe(400);
+    expect((await body(await detailRoute(req(beforePath), beforeParams))).modelId).toBe(mocks.modelName);
+    const oversizedResponse = await chatRoute(req("/api/chat", { conversationId: before.id, message: "word ".repeat(5500) }));
+    expect(oversizedResponse.status).toBe(400);
+    expect(await oversizedResponse.json()).toMatchObject({ error: { code: "context_too_large" } });
+    expect((await body(await detailRoute(req(beforePath), beforeParams))).messages).toHaveLength(1);
+    await body(await switchRoute(req(beforePath, { ...model, connectionId: anthropic.id }, "alice", "PATCH"), beforeParams));
+    mocks.reply = reference;
+    const response = await chatRoute(req("/api/chat", { conversationId: before.id, message: "Quote the reference." }));
+    expect(await response.text()).toContain("event: done");
+    const captured = mocks.calls.at(-1)!;
+    expect(captured.provider).toBe("claude");
+    expect(captured.systemPrompt).toContain("Label assumptions and inferences");
+    expect(JSON.parse(String(captured.systemPrompt).split("\n").at(-1)!)).toMatchObject({ references });
+    expect(captured.systemPrompt).toContain('"outputFormat":"Three bullets."');
+    expect(captured.systemPrompt).not.toContain("A newer reference.");
+    expect((await body(await detailRoute(req(beforePath), beforeParams))).messages.at(-1).content).toBe(reference);
+    await (await chatRoute(req("/api/chat", { conversationId: after.id, message: "Use the current reference." }))).text();
+    expect(mocks.calls.at(-1)?.systemPrompt).toContain('"references":"A newer reference."');
   });
   it("creates a conversation, streams normalized events, and stores only public messages", async () => {
     conversation = await body(
@@ -256,6 +366,19 @@ describe("server-proxied chat integration", () => {
     expect(last.provider).toBe("claude");
     expect(last.systemPrompt).toBe(before);
     expect((last.messages as unknown[]).length).toBeGreaterThan(1);
+  });
+  it("keeps stopped answers visible without passing their fragments to the next model turn", async () => {
+    const { created, read } = await seededTranscript();
+    const earlierQuestion = "Can you check my last example?";
+    const stopped = "Partial answer with an unverified claim.";
+    await insertMessage(created.id, "user", earlierQuestion);
+    await insertMessage(created.id, "assistant", stopped, [], "cancelled");
+    const response = await chatRoute(req("/api/chat", { conversationId: created.id, message: "Let's take a different approach." }));
+    expect(await response.text()).toContain("event: done");
+    const modelHistory = mocks.calls.at(-1)?.messages;
+    expect(modelHistory).toContainEqual(expect.objectContaining({ role: "user", content: earlierQuestion }));
+    expect(modelHistory).not.toContainEqual(expect.objectContaining({ role: "assistant", content: stopped }));
+    expect((await read()).messages).toContainEqual(expect.objectContaining({ content: stopped, status: "cancelled" }));
   });
   it("blocks disclosure requests before an upstream call and prevents literal output leaks", async () => {
     const count = mocks.calls.length;
@@ -514,5 +637,111 @@ describe("server-proxied chat integration", () => {
     const after = await read();
     expect(after.messages).toEqual(before.messages);
     expect(after.title).toBe(before.title);
+  });
+  it("acknowledges the durable send before model output and deduplicates the client ID", async () => {
+    const { created, before, read } = await seededTranscript();
+    const clientMessageId = "eb52376d-d701-47ba-b4b5-6687cad8f748";
+    const input = {
+      conversationId: created.id,
+      clientMessageId,
+      message: "Continue with a new example.",
+      attachments: [{ type: "image", mimeType: "image/png", data: "AQID", name: "fixture.png" }],
+    };
+    const calls = mocks.calls.length;
+    mocks.pause = true;
+    const response = await chatRoute(req("/api/chat", input));
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let first = "";
+    try {
+      first = decoder.decode((await reader.read()).value);
+      expect(first).toMatch(/^event: accepted\n/);
+      expect(first).not.toContain(input.message);
+      expect(first).not.toContain(input.attachments[0].data);
+      const duplicate = await chatRoute(req("/api/chat", { ...input, clientMessageId: clientMessageId.toUpperCase() }));
+      expect(duplicate.status).toBe(409);
+      expect(await duplicate.json()).toMatchObject({ error: { code: "message_already_sent" } });
+      await vi.waitFor(() => expect(mocks.resume).toBeTypeOf("function"));
+    } finally {
+      mocks.pause = false;
+      mocks.resume?.();
+    }
+    let rest = "";
+    for (let frame = await reader.read(); !frame.done; frame = await reader.read()) rest += decoder.decode(frame.value);
+    const doneLine = rest.match(/event: done\ndata: (.+)/)?.[1];
+    expect(doneLine).toBeDefined();
+    const done = JSON.parse(doneLine!);
+    const accepted = JSON.parse(first.split("\n")[1].slice("data: ".length)).message;
+    const after = await read();
+    const user = after.messages.at(-2);
+    const assistant = after.messages.at(-1);
+    expect(accepted).toEqual({ id: user.id, role: user.role, status: user.status, createdAt: user.createdAt });
+    expect(accepted.id).toBe(clientMessageId);
+    expect(done.committed).toEqual({
+      conversation: { id: after.id, title: after.title, personaId: after.personaId, connectionId: after.connectionId, modelId: after.modelId, updatedAt: after.updatedAt },
+      assistant: { id: assistant.id, role: assistant.role, status: assistant.status, createdAt: assistant.createdAt },
+      user: accepted,
+    });
+    expect(done.messageId).toBe(assistant.id);
+
+    const duplicate = await chatRoute(req("/api/chat", input));
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toMatchObject({ error: { code: "message_already_sent" } });
+    const denied = await chatRoute(req("/api/chat", input, "bob"));
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).not.toContain(clientMessageId);
+    const wrongAction = await chatRoute(req("/api/chat", { ...input, action: "regenerate" }));
+    expect(wrongAction.status).toBe(400);
+    const other = await body(await conversationRoute(req("/api/conversations", {
+      personaId: persona.id, connectionId: openai.id, modelId: mocks.modelName,
+    })));
+    const collision = await chatRoute(req("/api/chat", { ...input, conversationId: other.id }));
+    expect(collision.status).toBe(409);
+    expect(await collision.json()).toMatchObject({ error: { code: "message_id_conflict" } });
+    expect(mocks.calls).toHaveLength(calls + 1);
+    expect((await read()).messages).toHaveLength(before.messages.length + 2);
+  });
+  it("returns the replacement message receipt only after a successful edit", async () => {
+    const { created, before, read } = await seededTranscript();
+    const stream = await (await chatRoute(req("/api/chat", {
+      conversationId: created.id, action: "edit",
+      messageId: before.messages.find((m: any) => m.role === "user").id,
+      message: "Use a clearer comparison.",
+    }))).text();
+    expect(stream).not.toContain("event: accepted");
+    const line = stream.match(/event: done\ndata: (.+)/)?.[1];
+    expect(line).toBeDefined();
+    const { committed } = JSON.parse(line!);
+    const after = await read();
+    const user = after.messages.at(-2);
+    const reply = after.messages.at(-1);
+    expect(committed.user).toEqual({ id: user.id, role: "user", status: "complete", createdAt: user.createdAt });
+    expect(committed.assistant).toEqual({ id: reply.id, role: "assistant", status: "complete", createdAt: reply.createdAt });
+    expect(committed.conversation.updatedAt).toBe(after.updatedAt);
+  });
+  it("loads each list directly and keeps the workspace available when an account needs reconnecting", async () => {
+    const owner = "unreadable-account";
+    await body(await bootstrapRoute(req("/api/bootstrap", undefined, owner)));
+    const database = await db();
+    await database.query(
+      `INSERT INTO provider_connections(id,user_id,provider,name,last4,encrypted_key)
+       VALUES ($1,$2,'chatgpt','ChatGPT','','{}'::jsonb),($3,$2,'openai','Old connection','','{}'::jsonb)`,
+      ["unreadable-chatgpt", `test-${owner}`, "legacy-openai"],
+    );
+    const queries = vi.spyOn(database, "query");
+    try {
+      const connections = await body(await connectionsRoute(req("/api/connections", undefined, owner)));
+      expect(connections).toEqual([{ id: "unreadable-chatgpt", provider: "chatgpt", name: "ChatGPT", models: [], accountLabel: "Reconnect this account" }]);
+      expect(queries.mock.calls.map(([sql]) => sql).join("\n")).not.toMatch(/FROM (personas|conversations)/);
+      queries.mockClear();
+
+      expect(await body(await personasRoute(req("/api/personas", undefined, owner)))).toEqual([]);
+      expect(queries.mock.calls.map(([sql]) => sql).join("\n")).not.toMatch(/FROM (provider_connections|conversations)/);
+      const workspace = await body(await bootstrapRoute(req("/api/bootstrap", undefined, owner)));
+      expect(workspace).toMatchObject({ connections, personas: [], conversations: [] });
+      expect(JSON.stringify(workspace)).not.toContain("encrypted_key");
+    } finally {
+      queries.mockRestore();
+    }
   });
 });

@@ -1,0 +1,96 @@
+.form {
+  padding: 18px 26px 22px;
+}
+
+.role {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--hover);
+  overflow-wrap: anywhere;
+}
+
+.role:focus {
+  outline: none;
+}
+
+.roleIcon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.role strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.role p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.questions {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.question {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.question textarea {
+  width: 100%;
+  min-height: 54px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 68%);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.48;
+  resize: vertical;
+}
+
+.question textarea::placeholder {
+  color: var(--subtle);
+}
+
+.error {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+@media (max-width: 600px) {
+  .form { padding: 15px 18px 18px; }
+  .question textarea { font-size: 16px; }
+  .actions > button { flex: 1 1 auto; }
+}

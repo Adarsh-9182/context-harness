@@ -1,6 +1,6 @@
 # Architecture
 
-Harness is a Next.js App Router application with server-proxied model calls. A user chooses a connection, types a role and optional focus, and starts a conversation. Public APIs never return the generated persona definition or compiled system prompt.
+Harness is a Next.js App Router application with server-proxied model calls. Users can start from a role and optional focus or save a reusable context brief. Public APIs keep the generated persona definition and compiled system prompt on the server.
 
 ```mermaid
 flowchart TD
@@ -25,6 +25,7 @@ The database schema is initialized idempotently using parameterized SQL. Postgre
 | `users`                           | Account identity and Auth.js user fields.                                                    |
 | `provider_connections`            | Owner, account/model metadata, encrypted ChatGPT session or isolated Claude profile handle. |
 | `chatgpt_registrations` | Verified subject/client mapping retained after disconnect; no tokens. |
+| `contexts`                        | Owner, current brief, revision, and last edit time.                                          |
 | `personas`                        | Private definition/prompt, role/focus, greeting, cache key, template version.                |
 | `conversations`                   | Owner, persona, connection/model, title and custom-title flag, timestamps, soft archival.    |
 | `messages`                        | Visible content, image attachments, completion status, timestamps.                           |
@@ -33,7 +34,15 @@ The database schema is initialized idempotently using parameterized SQL. Postgre
 
 ChatGPT session encryption is separate from message storage. Messages and persona definitions are not application-encrypted; production database encryption/access controls remain operator responsibilities. Preserve the master key separately from encrypted connection backups.
 
+## Saved context
+
+The Context Builder saves a name, goal, instructions, reference text, and output format. Saving a brief needs no provider connection. A new chat takes a snapshot of the current revision in its persona definition. Later edits advance the saved revision, and model switching continues to use the snapshot attached to the chat.
+
+For each request, Harness combines its private instructions with the structured brief, labels reference material as evidence, and fits the full context before writing a new turn. The disclosure guard protects the private instructions while allowing the model to quote user-authored reference text. The brief is sent to the selected account when the user chats.
+
 ## Persona lifecycle
+
+The profession catalog offers 500 role names alongside custom roles. Its optional pre-chat questions collect a goal, relevant details, and an output format before compilation starts. Harness stores those answers with the persona and includes them in later chat requests. The role compiler receives the role and focus, and the selected chat model receives the brief when the user sends a message. Skipping the questions uses the original role-only context.
 
 1. Validate role/focus and reject harmful or instruction-overriding labels.
 2. Check account ownership, connection, and discovered model availability.

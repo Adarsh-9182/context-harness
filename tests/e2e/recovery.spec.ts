@@ -175,3 +175,66 @@ test("a failed ordinary send keeps the existing draft retry behavior", async ({ 
   await expect(page.getByText("The send failed.", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Message your expert")).toHaveValue("Keep this draft for retry.");
 });
+
+test("a saved question retries its reply without a duplicate send or a success reload", async ({ page }) => {
+  const commands: Array<Record<string, string>> = [];
+  let reads = 0;
+  page.on("request", (request) => {
+    if (request.method() === "GET" && request.url().endsWith("/api/conversations/recovery-chat")) reads++;
+  });
+  await openFixture(page, (route) => {
+    const command = route.request().postDataJSON();
+    commands.push(command);
+    return route.fulfill({ contentType: "text/event-stream", body: events(command.action === "send" ? [
+      ["accepted", { message: { id: command.clientMessageId, role: "user", status: "complete" } }],
+      ["error", { code: "provider_unavailable", message: "The account is temporarily unavailable." }],
+    ] : [
+      ["text", { text: "Your recovered reply." }],
+      ["done", { committed: { conversation: { id: original.id, title: "The saved question", personaId: original.personaId,
+        connectionId: original.connectionId, modelId: original.modelId, updatedAt: original.updatedAt },
+      assistant: { id: "recovered-answer", role: "assistant", status: "complete" } } }],
+    ]) });
+  });
+  await page.getByLabel("Message your expert").fill("The saved question");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "The account is temporarily unavailable." })).toBeVisible();
+  await expect(page.getByLabel("Message your expert")).toHaveValue("");
+  await expect.poll(() => reads).toBe(2);
+  await page.getByRole("button", { name: "Retry reply", exact: true }).click();
+  await expect(page.getByText("Your recovered reply.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop generation" })).not.toBeVisible();
+  expect(commands.map((command) => command.action)).toEqual(["send", "regenerate"]);
+  await expect(page.getByRole("article").getByText("The saved question", { exact: true })).toHaveCount(1);
+  expect(reads).toBe(2);
+});
+
+test("a streamed reply lets readers stay with an earlier message", async ({ page }) => {
+  const long = { ...original, messages: [...original.messages, ...Array.from({ length: 16 }, (_, index) => ({
+    id: `history-${index}`, role: index % 2 === 0 ? "user" as const : "assistant" as const,
+    content: `Earlier message ${index}. `.repeat(28),
+  }))] };
+  let release = () => {};
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  await openFixture(page, async (route) => {
+    await waiting;
+    await route.fulfill({ contentType: "text/event-stream", body: events([
+      ["text", { text: "Here is the latest reply." }],
+      ["done", { committed: { conversation: { id: original.id, title: original.title, personaId: original.personaId,
+        connectionId: original.connectionId, modelId: original.modelId, updatedAt: original.updatedAt },
+      assistant: { id: "latest-answer", role: "assistant", status: "complete" } } }],
+    ]) });
+  }, (route) => route.fulfill({ json: long }));
+  await page.getByLabel("Message your expert").fill("Please continue.");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  const jump = page.getByRole("button", { name: "Jump to latest", exact: true });
+  await expect(jump).toBeVisible();
+  release();
+  await expect(page.getByRole("button", { name: "Stop generation" })).not.toBeVisible();
+  await expect(jump).toBeVisible();
+  expect(await page.evaluate(() => window.scrollY)).toBeLessThan(150);
+  await jump.click();
+  await expect(jump).not.toBeVisible();
+  await expect(page.getByText("Here is the latest reply.", { exact: true })).toBeInViewport();
+});

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { PROFESSION_COUNT, PROFESSION_GROUPS } from "../src/lib/professions";
 import {
   assemblePersona,
   assertSafeRole,
@@ -26,6 +27,12 @@ const definition = definitionSchema.parse({
 });
 
 describe("private persona engine", () => {
+  it("offers 500 distinct profession names that can pass role validation", () => {
+    const roles = PROFESSION_GROUPS.flatMap(({ roles }) => roles);
+    expect(PROFESSION_COUNT).toBe(500);
+    expect(new Set(roles.map((role) => role.toLowerCase())).size).toBe(500);
+    for (const role of roles) expect(() => assertSafeRole(role)).not.toThrow();
+  });
   it("assembles stable role boundaries and adds medical scope when needed", () => {
     const math = assemblePersona(
       "Mathematician",
@@ -137,6 +144,24 @@ describe("private persona engine", () => {
         200,
       ),
     ).toThrow();
+  });
+  it("counts Unicode bytes and attachments while dropping the entire earliest turn", () => {
+    const messages = [
+      { role: "user", content: "x".repeat(600) },
+      { role: "assistant", content: "ñ".repeat(150), attachments: [{}] },
+      { role: "user", content: "y".repeat(240) },
+      { role: "assistant", content: "z".repeat(90) },
+      { role: "user", content: "é".repeat(30) },
+    ];
+    expect(fitContext("abc", messages, 1900, 300)).toEqual({
+      messages: messages.slice(2),
+      dropped: 2,
+      estimatedTokens: 155,
+    });
+    expect(messages).toHaveLength(5);
+    expect(() => fitContext("abc", [{ ...messages.at(-1)!, attachments: [{}] }], 1900, 300)).toThrow(
+      "The attached images and message exceed this model’s context",
+    );
   });
   it("rejects unstructured or oversized compilation output", () => {
     expect(() =>

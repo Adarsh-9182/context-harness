@@ -19,6 +19,7 @@ export type Persona = {
   focus: string;
   openingMessage: string;
   color: string;
+  context?: { id: string; revision: number };
 };
 export type Conversation = {
   id: string;
@@ -45,6 +46,7 @@ export type Message = {
 export type ConversationDetail = Conversation & {
   persona: Persona;
   messages: Message[];
+  initialGoal?: string;
 };
 export type Bootstrap = {
   user: { id: string; name: string; email?: string; development: boolean };

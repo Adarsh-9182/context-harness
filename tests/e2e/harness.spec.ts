@@ -34,6 +34,7 @@ test("two account connections → role only → streaming, math, code, switch, r
   await page
     .getByRole("button", { name: "Create expert", exact: true })
     .click();
+  await page.getByRole("button", { name: "Skip questions", exact: true }).click();
   const persona = await (await personaResponse).json();
   expect(Object.keys(persona).sort()).toEqual(
     ["color", "focus", "id", "openingMessage", "role"].sort(),
@@ -126,7 +127,10 @@ test("desktop sign-in can be cancelled and retried without losing a role draft",
   await page.goto("/");
   await page.getByLabel("What should your AI be?", { exact: true }).fill("Astronomer");
   await page.getByRole("button", { name: "Create expert", exact: true }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
+  const setup = page.getByRole("dialog", { name: "Before you start" });
+  await setup.getByRole("textbox", { name: "Goal", exact: true }).fill("Plan a night of stargazing.");
+  await setup.getByRole("button", { name: "Connect a model", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Connect your accounts." })).toBeVisible();
   await page.screenshot({ path: "test-results/connect-desktop.png", animations: "disabled" });
   await page.route("**/api/connections", route => route.fulfill({ status: 202, json: {
     id: "pending-browser-fixture", provider: "claude", status: "pending", authUrl: "https://claude.com/cai/oauth/authorize?fixture=true", expiresAt: Date.now() + 60000,
@@ -141,6 +145,8 @@ test("desktop sign-in can be cancelled and retried without losing a role draft",
   await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
   await expect(page.getByRole("button", { name: "Connect with Claude", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(setup.getByRole("textbox", { name: "Goal", exact: true })).toHaveValue("Plan a night of stargazing.");
+  await setup.getByRole("button", { name: "Close dialog" }).click();
   await expect(page.getByLabel("What should your AI be?", { exact: true })).toHaveValue("Astronomer");
 });
 test("home is keyboard accessible and a role draft survives connection onboarding", async ({
@@ -178,6 +184,7 @@ test("stop generation, search shortcut, and unsent files stay with their convers
   await page
     .getByRole("button", { name: "Create expert", exact: true })
     .click();
+  await page.getByRole("button", { name: "Skip questions", exact: true }).click();
   await expect(page.getByLabel("Message your expert")).toBeVisible();
   await connect(page, "Claude");
   await expect(
@@ -194,7 +201,7 @@ test("stop generation, search shortcut, and unsent files stay with their convers
   ).not.toBeVisible();
   await expect(page.getByLabel("Message your expert")).toBeEditable();
   await page
-    .locator('input[type="file"]')
+    .getByLabel("Conversation attachments", { exact: true })
     .setInputFiles({
       name: "private-notes.txt",
       mimeType: "text/plain",
@@ -210,6 +217,7 @@ test("stop generation, search shortcut, and unsent files stay with their convers
   await page
     .getByRole("button", { name: "Create expert", exact: true })
     .click();
+  await page.getByRole("button", { name: "Skip questions", exact: true }).click();
   await expect(page.getByLabel("Message your expert")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Remove private-notes.txt" }),
@@ -224,4 +232,39 @@ test("stop generation, search shortcut, and unsent files stay with their convers
   await expect(
     page.getByRole("heading", { name: /A mind for whatever/ }),
   ).toBeVisible();
+});
+
+test("browse 500 professions and answer setup questions before starting a chat", async ({ page }) => {
+  await page.goto("/");
+  await connect(page, "ChatGPT");
+  await page.getByRole("button", { name: /Explore professions/ }).click();
+  const library = page.getByRole("region", { name: "Professions", exact: true });
+  await expect(library.getByRole("status")).toHaveText("Showing 30 of 500 professions");
+  await library.getByRole("button", { name: "Show more professions" }).click();
+  await expect(library.getByRole("status")).toHaveText("Showing 60 of 500 professions");
+  await library.getByRole("combobox", { name: "Profession category" }).selectOption("Software & Data");
+  await expect(library.getByRole("status")).toHaveText("Showing 30 of 50 professions");
+  const search = library.getByRole("searchbox", { name: "Search professions" });
+  await search.fill("Restaurant Menu Planner");
+  await expect(library.getByRole("button", { name: /as a custom role/ })).toBeVisible();
+  await search.fill("Data Engineer");
+  const submissions: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/personas") {
+      submissions.push(request.postDataJSON());
+    }
+  });
+  await library.getByRole("button", { name: "Data Engineer", exact: true }).click();
+  const setup = page.getByRole("dialog", { name: "Before you start" });
+  await setup.getByRole("textbox", { name: "Goal", exact: true }).fill("Design a product analytics pipeline.");
+  await setup.getByRole("textbox", { name: "Relevant details", exact: true }).fill("The team uses Postgres and loads new events daily.");
+  await setup.getByRole("textbox", { name: "Expected output", exact: true }).fill("A rollout checklist and event schema.");
+  expect(submissions).toHaveLength(0);
+  await setup.getByRole("button", { name: "Start chat" }).click();
+  await expect(page.getByLabel("Message your expert")).toBeEditable();
+  expect(submissions).toEqual([expect.objectContaining({ role: "Data Engineer", brief: {
+    goal: "Design a product analytics pipeline.",
+    details: "The team uses Postgres and loads new events daily.",
+    outputFormat: "A rollout checklist and event schema.",
+  } })]);
 });

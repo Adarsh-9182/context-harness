@@ -12,6 +12,7 @@ async function startConversation(page: Page) {
   await page.getByLabel("What should your AI be?", { exact: true }).fill("Teacher");
   const created = page.waitForResponse((response) => response.url().endsWith("/api/conversations") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create expert", exact: true }).click();
+  await page.getByRole("button", { name: "Skip questions", exact: true }).click();
   const conversation = await (await created).json();
   await expect(page.getByLabel("Message your expert")).toBeVisible();
   return conversation.id as string;

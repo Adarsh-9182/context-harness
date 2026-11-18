@@ -11,6 +11,21 @@ export class AppError extends Error {
   }
 }
 
+const loopbackHost = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
+
+function mutationOrigin(request: Request, configured: string | undefined) {
+  if (configured) return new URL(configured).origin;
+  const url = new URL(request.url);
+  const host = request.headers.get("host");
+  if (host && loopbackHost.test(url.hostname)) {
+    // Next.js normalizes the loopback URL to localhost. The browser keeps the
+    // original host and port in its Origin header.
+    if (!loopbackHost.test(host)) return null;
+    return `${url.protocol}//${host.toLowerCase()}`;
+  }
+  return url.origin;
+}
+
 export function requireMutation(request: Request): void {
   const configured = process.env.APP_ORIGIN;
   if (process.env.NODE_ENV === "production" && !configured) {
@@ -20,11 +35,9 @@ export function requireMutation(request: Request): void {
       "The application origin has not been configured.",
     );
   }
-  const origin = configured
-    ? new URL(configured).origin
-    : new URL(request.url).origin;
+  const origin = mutationOrigin(request, configured);
   if (
-    request.headers.get("origin") !== origin ||
+    !origin || request.headers.get("origin") !== origin ||
     request.headers.get("x-harness-request") !== "1"
   ) {
     throw new AppError(

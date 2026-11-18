@@ -136,28 +136,16 @@ async function claudeLogin(attempt: Attempt) {
   if (await claudeSignedIn(credentials.profileId)) { await connected(attempt, credentials); return; }
   const child: ChildProcessWithoutNullStreams = await startClaude(credentials.profileId, ["auth", "login", "--claudeai"]);
   attempt.cleanup = () => stopClaude(child);
-  let output = "";
-  const readLink = (chunk: Buffer) => {
-    output = (output + chunk.toString()).slice(-16_000);
-    // Only official authorization links are exposed, never native diagnostics or tokens.
-    const matches = output.match(/https:\/\/[^\s\u001b<>"']+/g) || [];
-    for (const match of matches) {
-      try {
-        const url = new URL(match);
-        if (["claude.ai", "platform.claude.com", "console.anthropic.com"].includes(url.hostname) &&
-            !url.username && !url.password && /\/oauth\/authorize$/.test(url.pathname)) attempt.authUrl = url.toString();
-      } catch { /* Incomplete terminal chunk. */ }
-    }
-  };
-  child.stdout.on("data", readLink);
-  child.stderr.on("data", readLink);
+  // The CLI opens its loopback sign-in in the browser. The URL it prints is a
+  // separate terminal fallback that requires pasting a code back into the CLI.
+  child.stdout.resume();
   child.once("close", (code) => {
     if (attempt.status !== "pending") return;
     attempt.working = true;
     void (async () => {
       try {
         if (code !== 0 || !await claudeSignedIn(credentials.profileId))
-          throw new AppError(401, "sign_in_failed", "Claude sign-in was not completed. Connect again and finish signing in in your browser.");
+          throw new AppError(401, "sign_in_failed", "Claude sign-in was not completed. Connect again and finish in the browser tab opened by Claude Code.");
         await connected(attempt, credentials);
       } catch (error) { failure(attempt, error); }
       finally { attempt.working = false; }

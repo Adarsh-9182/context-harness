@@ -28,7 +28,7 @@ export default defineConfig({
         DEV_AUTH: "true",
         HARNESS_DATA_DIR: ".local/e2e",
         HARNESS_NEXT_DIST_DIR: ".next-e2e",
-        APP_ORIGIN: "http://127.0.0.1:4320",
+        APP_ORIGIN: "",
         HARNESS_E2E: "true",
         HARNESS_TEST_PROVIDER_ORIGIN: "http://127.0.0.1:4519",
         HARNESS_CLAUDE_BINARY: `${process.cwd()}/scripts/fixtures/claude-cli.mjs`,

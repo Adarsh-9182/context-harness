@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const account = resolve(process.env.CLAUDE_CONFIG_DIR, ".fixture-account");
 if (args[0] === "auth") {
   if (args[1] === "login") {
-    console.log("Complete sign-in at https://claude.ai/oauth/authorize?fixture=true");
+    console.log("If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&fixture=true");
     await new Promise(resolve => setTimeout(resolve, 100));
     await writeFile(account, "fixture-only", { mode: 0o600 });
   } else if (args[1] === "logout") await rm(account, { force: true });

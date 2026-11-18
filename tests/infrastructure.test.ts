@@ -106,6 +106,16 @@ describe("request boundary", () => {
       requireMutation(mutation("http://localhost:3000", "")),
     ).toThrow(AppError);
   });
+  it("checks the original loopback host when the framework normalizes the URL", () => {
+    const local = mutation("http://127.0.0.1:3000");
+    local.headers.set("host", "127.0.0.1:3000");
+    expect(() => requireMutation(local)).not.toThrow();
+    local.headers.set("origin", "http://localhost:3000");
+    expect(() => requireMutation(local)).toThrow(AppError);
+    local.headers.set("origin", "http://example.com:3000");
+    local.headers.set("host", "example.com:3000");
+    expect(() => requireMutation(local)).toThrow(AppError);
+  });
   it("rejects malformed JSON and schema-invalid values without returning submitted data", async () => {
     const invalid = new Request("http://localhost:3000/api/chat", {
       method: "POST",

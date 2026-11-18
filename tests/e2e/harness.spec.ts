@@ -129,13 +129,15 @@ test("desktop sign-in can be cancelled and retried without losing a role draft",
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.screenshot({ path: "test-results/connect-desktop.png", animations: "disabled" });
   await page.route("**/api/connections", route => route.fulfill({ status: 202, json: {
-    id: "pending-browser-fixture", provider: "claude", status: "pending", expiresAt: Date.now() + 60000,
+    id: "pending-browser-fixture", provider: "claude", status: "pending", authUrl: "https://claude.com/cai/oauth/authorize?fixture=true", expiresAt: Date.now() + 60000,
   } }));
   await page.route("**/api/connections/login/pending-browser-fixture", route => route.fulfill({ json: {
-    id: "pending-browser-fixture", provider: "claude", status: route.request().method() === "DELETE" ? "cancelled" : "pending", expiresAt: Date.now() + 60000,
+    id: "pending-browser-fixture", provider: "claude", status: route.request().method() === "DELETE" ? "cancelled" : "pending", authUrl: "https://claude.com/cai/oauth/authorize?fixture=true", expiresAt: Date.now() + 60000,
   } }));
   await page.getByRole("button", { name: "Connect with Claude", exact: true }).click();
   await expect(page.getByText("Finish connecting with Claude", { exact: true })).toBeVisible();
+  await expect(page.getByText("Finish in the browser tab opened by Claude Code.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Continue signing in" })).toHaveCount(0);
   await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
   await expect(page.getByRole("button", { name: "Connect with Claude", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Done", exact: true }).click();

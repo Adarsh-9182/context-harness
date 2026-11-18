@@ -132,8 +132,10 @@ export function AccountConnections({ open, onOpenChange, connections, onSaved, o
           <div className="account-pending" role="status" aria-live="polite">
             <LoaderCircle size={19} className="spin" />
             <div><strong>Finish connecting with {login.provider === "chatgpt" ? "ChatGPT" : "Claude"}</strong>
-              <p>Complete sign-in in your browser. This window will update when you’re connected.</p>
-              {login.authUrl && <a href={login.authUrl} target="_blank" rel="noopener noreferrer">Continue signing in <ExternalLink size={12} /></a>}
+              <p>{login.provider === "claude"
+                ? "Finish in the browser tab opened by Claude Code. If you see a paste-code prompt, cancel here and retry from Harness."
+                : "Complete sign-in in your browser. This window will update when you’re connected."}</p>
+              {login.provider === "chatgpt" && login.authUrl && <a href={login.authUrl} target="_blank" rel="noopener noreferrer">Continue signing in <ExternalLink size={12} /></a>}
               <button className="cancel-account-login" disabled={cancelling} onClick={async () => {
                 setCancelling(true);
                 try { await apply(await accountApi<AccountLogin>(`/api/connections/login/${login.id}`, "DELETE")); }

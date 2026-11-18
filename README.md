@@ -22,6 +22,8 @@ The launcher installs lockfile-pinned dependencies if needed and starts **http:/
 4. Type a role and optionally add a focus such as “number theory, for a beginner.” Preparing a role and chatting consume your account's usage allowance.
 5. Switch the connected account/model in the header; the conversation keeps its persona and history.
 
+Start both provider sign-ins from Harness at the local address above. The ChatGPT and Claude MCP settings are for adding external tools to those apps.
+
 There is no API key entry or alternate provider option. ChatGPT uses the documented Sign in with ChatGPT plan-usage flow, including encrypted session storage, automatic renewal, and session revocation on disconnect. Claude credentials stay with the official client's isolated local profile; Harness does not extract or accept Claude tokens.
 
 Run this version natively on the computer where you sign in. The OAuth callback binds only to `127.0.0.1`; remote/hosted connection attempts are rejected. The existing Docker/hosting configuration is infrastructure scaffolding, not a working account-connection deployment. See [Account connections](docs/ACCOUNT-CONNECTIONS.md) for setup and current boundaries.

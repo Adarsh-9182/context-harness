@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ChatGPTAccountProvider, ClaudeAccountProvider } from "./accounts";
 import { assertSafeEndpoint, normalizeBaseUrl } from "./security";
 import {
   backoff,
@@ -710,6 +711,10 @@ export function createProvider(
   baseUrl?: string,
 ): ModelProvider {
   switch (id) {
+    case "chatgpt":
+      return new ChatGPTAccountProvider();
+    case "claude":
+      return new ClaudeAccountProvider();
     case "openai":
       return new OpenAICompatibleProvider("openai");
     case "deepseek":

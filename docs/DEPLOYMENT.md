@@ -1,5 +1,7 @@
 # Production deployment
 
+The current Claude/ChatGPT connection feature runs in native local Harness. Remotely hosted sign-in is disabled: the ChatGPT public-client flow needs a browser-reachable loopback callback, and Claude requires its official client on the same computer. This document describes retained infrastructure, not a verified deployment of the account connection feature. Commercial/remote account integrations require separate provider support.
+
 Harness needs a Node service, Postgres, Redis, an HTTPS origin, and a real sign-in provider. The production Docker target includes the Next.js standalone server and runs as a non-root user on port 3000. Deploy one web replica until generation locks are distributed.
 
 ## Health checks
@@ -45,7 +47,7 @@ In the web service settings:
 | `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` | GitHub OAuth application credentials, or configure email instead |
 | `EMAIL_SERVER`, `EMAIL_FROM` | SMTP URL and sender, if using email sign-in |
 
-Generate secrets independently using a cryptographic generator. Back up `HARNESS_MASTER_KEY` securely; replacing it makes saved provider connections unreadable. Do not set `HARNESS_E2E`, `HARNESS_TEST_MODE`, or `HARNESS_TEST_PROVIDER_ORIGIN` in production. Provider keys belong in the Connections UI after sign-in.
+Generate secrets independently using a cryptographic generator. Back up `HARNESS_MASTER_KEY` securely; replacing it makes saved provider connections unreadable. Do not set `HARNESS_E2E`, `HARNESS_TEST_MODE`, or `HARNESS_TEST_PROVIDER_ORIGIN` in production. The Connections UI accepts only Claude/ChatGPT account sign-in; it has no API key option.
 
 Register a GitHub OAuth app with homepage `APP_ORIGIN` and callback `APP_ORIGIN/api/auth/callback/github`. These are OAuth app credentials, not a personal access token. Email sign-in requires working SMTP and an authorized sender. Placeholder credentials cannot verify either flow.
 
@@ -67,4 +69,4 @@ Railway detects the Dockerfile during CLI deployment. Use dashboard settings or 
 
 The container workflow builds this Dockerfile and runs an isolated production stack with Postgres and Redis. It checks readiness, liveness, public authentication metadata, and rejection of anonymous/test-header access. Generated test secrets are disposable and cannot sign users into a real provider. A separate integration job exercises chat persistence against real Postgres with mocked upstream models.
 
-Before sharing a hosted URL, verify real OAuth/email sign-in, connect real provider keys, compile a role, stream a reply, switch providers, reload the transcript, and sign out. Set up database and encryption-key backups before collecting user data. The retained `.openai/hosting.json` belongs to the static prototype and cannot deploy this backend.
+Before sharing a hosted URL, verify real OAuth/email sign-in, verify the supported account-connection deployment and connect real accounts, compile a role, stream a reply, switch providers, reload the transcript, and sign out. Set up database and encryption-key backups before collecting user data. The retained `.openai/hosting.json` belongs to the static prototype and cannot deploy this backend.

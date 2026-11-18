@@ -9,8 +9,8 @@ export async function DELETE(
   try {
     requireMutation(request);
     const user = await requestUser(request);
-    await removeConnection(user.id, (await context.params).id);
-    return Response.json({ ok: true });
+    const result = await removeConnection(user.id, (await context.params).id);
+    return Response.json({ ok: true, ...result });
   } catch (error) {
     return errorResponse(error);
   }

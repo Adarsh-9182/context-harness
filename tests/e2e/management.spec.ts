@@ -6,8 +6,7 @@ const key = "fixture-management-secret-9876";
 async function startConversation(page: Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a model", exact: true }).click();
-  await page.getByLabel("API key", { exact: true }).fill(key);
-  await page.getByRole("button", { name: "Validate & connect" }).click();
+  await page.getByRole("button", { name: "Connect with ChatGPT" }).click();
   await expect(page.getByText("Connected", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByLabel("What should your AI be?", { exact: true }).fill("Teacher");

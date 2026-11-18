@@ -13,7 +13,7 @@ import {
   commitTurn,
   insertMessage,
 } from "@/lib/server/service";
-import { decryptKey } from "@/lib/server/crypto";
+import { connectionCredential } from "@/lib/server/account-connections";
 import { db } from "@/lib/server/db";
 import { consumeRateLimit } from "@/lib/server/rate-limit";
 import { logEvent } from "@/lib/server/logger";
@@ -90,7 +90,7 @@ export async function POST(request: Request) {
               );
               const guard = new DisclosureGuard(turn.persona.compiled_prompt);
               for await (const chunk of provider.stream({
-                apiKey: await decryptKey(turn.connection.encrypted_key),
+                apiKey: await connectionCredential(turn.connection),
                 model: turn.model.id,
                 systemPrompt: turn.persona.compiled_prompt,
                 messages: fitted.messages,

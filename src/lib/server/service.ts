@@ -1,14 +1,15 @@
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  createProvider,
   type Model,
   type ProviderId,
   type Attachment,
   type UnifiedMessage,
 } from "../providers";
 import { db } from "./db";
-import { encryptKey, decryptKey } from "./crypto";
+import { decryptKey } from "./crypto";
+import { accountConnectionSchema } from "./account-logins";
+import { connectionCredential, disconnectAccount, isAccountProvider, publicAccountConnection } from "./account-connections";
 import { AppError } from "./http";
 import {
   compilePersona,
@@ -64,20 +65,7 @@ export type MessageRow = {
   created_at: string | Date;
 };
 
-export const connectionSchema = z
-  .object({
-    provider: z.enum([
-      "openai",
-      "anthropic",
-      "deepseek",
-      "google",
-      "compatible",
-    ]),
-    name: z.string().trim().min(1).max(80).optional(),
-    apiKey: z.string().trim().min(1).max(4096),
-    baseUrl: z.string().url().max(400).optional(),
-  })
-  .strict();
+export const connectionSchema = accountConnectionSchema;
 export const conversationSchema = z
   .object({
     personaId: z.string().uuid(),
@@ -141,17 +129,7 @@ export const chatSchema = z
   });
 
 export async function publicConnection(r: ConnectionRow) {
-  // Derive from the authenticated envelope rather than trusting legacy suffix
-  // metadata. A short local placeholder must never be returned in full.
-  const credential = await decryptKey(r.encrypted_key);
-  return {
-    id: r.id,
-    provider: r.provider,
-    name: r.name,
-    last4: credential.length > 4 ? credential.slice(-4) : "",
-    models: r.models,
-    baseUrl: r.base_url,
-  };
+  return publicAccountConnection(r);
 }
 export const publicPersona = (r: PersonaRow) => ({
   id: r.id,
@@ -204,7 +182,7 @@ export async function bootstrap(user: UserIdentity) {
   ]);
   return {
     user: { id: user.id, name: user.name, development: user.development === true },
-    connections: await Promise.all(connections.rows.map(publicConnection)),
+    connections: await Promise.all(connections.rows.filter(r => isAccountProvider(r.provider)).map(publicConnection)),
     personas: personas.rows.map(publicPersona),
     conversations: conversations.rows.map(publicConversation),
   };
@@ -224,6 +202,8 @@ export async function getConnection(userId: string, id: string) {
       "connection_not_found",
       "This provider connection is no longer available. Connect it again.",
     );
+  if (!isAccountProvider(row.provider))
+    throw new AppError(400, "account_connection_required", "Connect with Claude or ChatGPT, then select it for this conversation.");
   return row;
 }
 export function pickModel(connection: ConnectionRow, id: string): Model {
@@ -236,60 +216,8 @@ export function pickModel(connection: ConnectionRow, id: string): Model {
     );
   return model;
 }
-export async function saveConnection(
-  user: UserIdentity,
-  input: z.infer<typeof connectionSchema>,
-) {
-  await ensureUser(user);
-  const adapter = createProvider(input.provider, input.baseUrl);
-  const models = await adapter.listModels(input.apiKey);
-  if (!models.length)
-    throw new AppError(
-      400,
-      "model_unavailable",
-      "No compatible chat models were available for this key.",
-    );
-  const id = randomUUID();
-  const envelope = await encryptKey(input.apiKey);
-  await (
-    await db()
-  ).query(
-    "INSERT INTO provider_connections (id,user_id,provider,name,last4,encrypted_key,base_url,models) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-    [
-      id,
-      user.id,
-      input.provider,
-      input.name || providerName(input.provider),
-      input.apiKey.length > 4 ? input.apiKey.slice(-4) : "",
-      JSON.stringify(envelope),
-      input.baseUrl ?? null,
-      JSON.stringify(models),
-    ],
-  );
-  return publicConnection(await getConnection(user.id, id));
-}
-function providerName(provider: string) {
-  return (
-    (
-      {
-        openai: "OpenAI",
-        anthropic: "Anthropic",
-        deepseek: "DeepSeek",
-        google: "Google Gemini",
-        compatible: "OpenAI-compatible",
-      } as Record<string, string>
-    )[provider] ?? provider
-  );
-}
 export async function removeConnection(userId: string, id: string) {
-  await getConnection(userId, id);
-  // Historical conversations retain their id; deleting a key makes future sends fail clearly.
-  await (
-    await db()
-  ).query("DELETE FROM provider_connections WHERE id=$1 AND user_id=$2", [
-    id,
-    userId,
-  ]);
+  return disconnectAccount(await getConnection(userId, id));
 }
 const compilationLocks = new Map<
   string,
@@ -331,7 +259,7 @@ export async function createPersona(
       focus: input.focus,
       provider: connection.provider,
       baseUrl: connection.base_url ?? undefined,
-      apiKey: await decryptKey(connection.encrypted_key),
+      apiKey: await connectionCredential(connection),
       model,
       signal,
     });

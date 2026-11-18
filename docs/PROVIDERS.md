@@ -1,5 +1,7 @@
 # Provider adapters
 
+> Historical API-adapter research. The current app offers only Claude and ChatGPT account sign-in; see [Account connections](ACCOUNT-CONNECTIONS.md). API-key entry and other providers are not available in the app.
+
 Research and implementation checked against official documentation on **17 November 2026**. API model identifiers change; Harness discovers the models available to each connected key instead of shipping a fixed list of model IDs.
 
 ## One server-only contract

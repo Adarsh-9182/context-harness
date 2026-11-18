@@ -31,6 +31,7 @@ export default defineConfig({
         APP_ORIGIN: "http://127.0.0.1:4320",
         HARNESS_E2E: "true",
         HARNESS_TEST_PROVIDER_ORIGIN: "http://127.0.0.1:4519",
+        HARNESS_CLAUDE_BINARY: `${process.cwd()}/scripts/fixtures/claude-cli.mjs`,
       },
     },
   ],

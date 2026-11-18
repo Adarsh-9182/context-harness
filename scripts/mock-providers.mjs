@@ -1,5 +1,10 @@
 // Explicitly test-only upstream. Normal application servers never import this file.
 import http from "node:http";
+import { randomUUID, createHash } from "node:crypto";
+import { generateKeyPair, exportJWK, SignJWT } from "jose";
+const { publicKey, privateKey } = await generateKeyPair("RS256");
+const publicJwk = { ...await exportJWK(publicKey), kid: "harness-fixture", alg: "RS256", use: "sig" };
+const grants = new Map();
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/health") {
@@ -7,6 +12,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const provider = url.pathname.split("/")[1];
+  if (provider === "chatgpt" && !url.pathname.includes("/v1/")) {
+    const json = value => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(value)); };
+    if (url.pathname === "/chatgpt/jwks") return json({ keys: [publicJwk] });
+    if (url.pathname === "/chatgpt/discovery") return json({ revocation_endpoint: "http://127.0.0.1:4519/chatgpt/revoke" });
+    if (url.pathname === "/chatgpt/revoke") { res.end(); return; }
+    if (url.pathname === "/chatgpt/authorize") {
+      const code = randomUUID();
+      const clientId = url.searchParams.get("client_id") === "dynamic_agent_client" ? `oaiapp_${randomUUID()}` : url.searchParams.get("client_id");
+      grants.set(code, { clientId, nonce: url.searchParams.get("nonce"), challenge: url.searchParams.get("code_challenge"), redirectUri: url.searchParams.get("redirect_uri") });
+      const callback = new URL(url.searchParams.get("redirect_uri"));
+      callback.search = new URLSearchParams({ code, state: url.searchParams.get("state"), client_id: clientId });
+      res.writeHead(302, { Location: callback.toString() }); res.end(); return;
+    }
+    if (url.pathname === "/chatgpt/token") {
+      let raw = ""; for await (const chunk of req) raw += chunk;
+      const params = new URLSearchParams(raw);
+      const grant = grants.get(params.get("code"));
+      grants.delete(params.get("code"));
+      if (!grant || grant.clientId !== params.get("client_id") || grant.redirectUri !== params.get("redirect_uri") ||
+          grant.challenge !== createHash("sha256").update(params.get("code_verifier") || "").digest("base64url")) {
+        res.statusCode = 400; return json({ error: "invalid_grant" });
+      }
+      const token = await new SignJWT({ nonce: grant.nonce, email: "fixture@example.test" })
+        .setProtectedHeader({ alg: "RS256", kid: publicJwk.kid }).setIssuer("https://auth.openai.com")
+        .setAudience(grant.clientId).setSubject("fixture-account").setIssuedAt().setExpirationTime("1h").sign(privateKey);
+      return json({ access_token: "fixture-account-access", refresh_token: "fixture-refresh-private", id_token: token,
+        expires_in: 3600, token_type: "Bearer", scope: "openid email profile offline_access resource.invoke chatgpt.tokens.use.direct" });
+    }
+    res.statusCode = 404; res.end(); return;
+  }
   const key =
     req.headers.authorization ||
     req.headers["x-api-key"] ||
@@ -22,6 +57,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET") {
+    if (provider === "chatgpt") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ models: [{ slug: "fixture-chatgpt", display_name: "Harness Test GPT", visibility: "list", input_modalities: ["text", "image"] }] }));
+      return;
+    }
     const model =
       provider === "anthropic"
         ? {
@@ -46,8 +86,8 @@ const server = http.createServer(async (req, res) => {
   let raw = "";
   for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw);
-  const system = body.system || body.messages?.[0]?.content || "";
-  const last = body.messages?.at(-1)?.content || "";
+  const system = body.instructions || body.system || body.messages?.[0]?.content || "";
+  const last = body.input?.at(-1)?.content?.[0]?.text || body.messages?.at(-1)?.content || "";
   let output;
   if (String(system).includes("You compile safe")) {
     let role = "Expert";
@@ -81,7 +121,14 @@ const server = http.createServer(async (req, res) => {
     "Cache-Control": "no-cache",
   });
   const emit = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-  if (provider === "anthropic") {
+  if (provider === "chatgpt") {
+    for (let i = 0; i < output.length; i += 18) {
+      if (res.destroyed) break;
+      emit({ type: "response.output_text.delta", delta: output.slice(i, i + 18) });
+      await new Promise(r => setTimeout(r, String(last).includes("slow") ? 120 : 3));
+    }
+    emit({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 80, output_tokens: 100 } } });
+  } else if (provider === "anthropic") {
     res.write(
       `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 80, output_tokens: 0 } } })}\n\n`,
     );

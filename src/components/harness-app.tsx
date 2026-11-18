@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type CSSProperties,
 } from "react";
 import { Toaster, toast } from "sonner";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -17,7 +18,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   MessageSquare,
-  KeyRound,
+  Link2,
   ChevronDown,
   ChevronRight,
   Check,
@@ -42,7 +43,6 @@ import {
   ShieldCheck,
   LoaderCircle,
   Trash2,
-  ExternalLink,
   GraduationCap,
   FlaskConical,
   Compass,
@@ -56,6 +56,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Markdown } from "@/components/markdown";
+import { AccountConnections as Connections } from "@/components/account-connections";
 import TextareaAutosize from "react-textarea-autosize";
 import { useUI } from "@/lib/store";
 import type {
@@ -162,41 +163,8 @@ const PRESETS = [
   },
 ];
 const PROVIDERS = [
-  {
-    id: "openai",
-    name: "OpenAI",
-    symbol: "◎",
-    description: "GPT models",
-    link: "https://platform.openai.com/api-keys",
-  },
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    symbol: "✳",
-    description: "Claude models",
-    link: "https://console.anthropic.com/settings/keys",
-  },
-  {
-    id: "google",
-    name: "Google Gemini",
-    symbol: "✦",
-    description: "Gemini models",
-    link: "https://aistudio.google.com/api-keys",
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    symbol: "≈",
-    description: "DeepSeek models",
-    link: "https://platform.deepseek.com/api_keys",
-  },
-  {
-    id: "compatible",
-    name: "OpenAI-compatible",
-    symbol: "⌘",
-    description: "OpenRouter, Groq, Ollama & more",
-    link: "",
-  },
+  { id: "chatgpt", name: "ChatGPT" },
+  { id: "claude", name: "Claude" },
 ];
 const providerName = (id: string) =>
   PROVIDERS.find((p) => p.id === id)?.name || id;
@@ -338,8 +306,14 @@ export function HarnessApp() {
     bottom = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     upload = useRef<HTMLInputElement>(null),
-    roleInput = useRef<HTMLInputElement>(null);
-  const { theme, toggleTheme, sidebarOpen, setSidebar } = useUI();
+    roleInput = useRef<HTMLInputElement>(null),
+    composerRef = useRef<HTMLDivElement>(null),
+    conversationRef = useRef<HTMLDivElement>(null);
+  const { theme, toggleTheme, sidebarOpen, setSidebar, sidebarPinned, setSidebarPinned } = useUI();
+  const [compactViewport, setCompactViewport] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarToggle = useRef<HTMLButtonElement>(null);
+  const sidebarVisible = compactViewport ? sidebarOpen : sidebarPinned;
   const contextRef = useRef({
       chatId: "",
       connectionId: "",
@@ -378,12 +352,46 @@ export function HarnessApp() {
       .finally(() => setLoading(false));
   }, [refresh]);
   useEffect(() => {
+    function openAccountLink() {
+      if (window.location.hash !== "#connect") return;
+      setSidebar(false);
+      setConnectOpen(true);
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    }
+    openAccountLink();
+    window.addEventListener("hashchange", openAccountLink);
+    return () => window.removeEventListener("hashchange", openAccountLink);
+  }, [setSidebar]);
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const update = () => { setCompactViewport(media.matches); if (!media.matches) setSidebar(false); };
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [setSidebar]);
+  useEffect(() => {
+    if (!compactViewport || !sidebarOpen || loading) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    sidebarRef.current?.querySelector<HTMLButtonElement>(".collapse-sidebar")?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      if (sidebarRef.current?.contains(document.activeElement) || document.activeElement === document.body)
+        sidebarToggle.current?.focus();
+    };
+  }, [compactViewport, sidebarOpen, loading]);
+  function toggleSidebar() {
+    if (compactViewport) setSidebar(!sidebarOpen);
+    else setSidebarPinned(!sidebarPinned);
+  }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
+        setSidebar(false);
         setSearchOpen(true);
       }
       if (
@@ -395,10 +403,24 @@ export function HarnessApp() {
         newChat();
       }
       if (e.key === "Escape" && busy) controller.current?.abort();
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        toggleSidebar();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   });
+  useEffect(() => {
+    const composer = composerRef.current;
+    const conversation = conversationRef.current;
+    if (!composer || !conversation) return;
+    const measure = () => conversation.style.setProperty("--composer-clearance", `${composer.getBoundingClientRect().height}px`);
+    measure();
+    const resize = new ResizeObserver(measure);
+    resize.observe(composer);
+    return () => resize.disconnect();
+  }, [view, chat?.id]);
   useEffect(() => {
     if (chat?.messages.length)
       bottom.current?.scrollIntoView({
@@ -1002,25 +1024,39 @@ export function HarnessApp() {
   const persona = chat?.persona;
   return (
     <>
-      <Toaster theme={theme} position="bottom-center" richColors closeButton />
-      <div className="app-frame">
+      <Toaster theme={theme} position="top-right" offset={84} visibleToasts={2}
+        toastOptions={{ className: "workspace-toast", duration: 2800 }} closeButton />
+      <div className={`app-frame ${sidebarPinned ? "sidebar-pinned" : "sidebar-tucked"}`}>
         {sidebarOpen && (
           <button
             className="mobile-shade"
-            aria-label="Close sidebar"
+            aria-label="Dismiss navigation"
+            tabIndex={-1}
             onClick={() => setSidebar(false)}
           />
         )}
-        <aside className={`app-sidebar ${sidebarOpen ? "is-open" : ""}`}>
+        <aside ref={sidebarRef} id="workspace-sidebar" className={`app-sidebar ${sidebarOpen ? "is-open" : ""}`}
+          aria-label="Workspace navigation" role={compactViewport ? "dialog" : undefined}
+          aria-modal={compactViewport && sidebarOpen ? true : undefined}
+          aria-hidden={!sidebarVisible} inert={!sidebarVisible}
+          onKeyDown={(event) => {
+            if (!compactViewport || !sidebarOpen) return;
+            if (event.key === "Escape") { event.stopPropagation(); setSidebar(false); }
+            if (event.key === "Tab") {
+              const controls = [...(sidebarRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input, [tabindex="0"]') || [])].filter(el => el.getClientRects().length > 0);
+              const first = controls[0], last = controls.at(-1);
+              if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
+          }}>
           <div className="sidebar-brand">
-            <button onClick={newChat} aria-label="Harness home">
-              <Mark small />
-              <span>harness</span>
-              <small>beta</small>
-            </button>
+            <div className="workspace-label"><span className="workspace-dot" />YOUR SPACE</div>
             <button
               className="icon-button collapse-sidebar"
-              onClick={() => setSidebar(false)}
+              onClick={() => {
+                if (compactViewport) setSidebar(false);
+                else { setSidebarPinned(false); sidebarToggle.current?.focus(); }
+              }}
               aria-label="Close sidebar"
             >
               <PanelLeftClose size={17} />
@@ -1031,7 +1067,7 @@ export function HarnessApp() {
             New conversation<span>⌘ ⇧ O</span>
           </button>
           <div className="sidebar-nav">
-            <button onClick={() => setSearchOpen(true)}>
+            <button onClick={() => { setSidebar(false); setSearchOpen(true); }}>
               <Search size={16} />
               Search conversations<span>⌘ K</span>
             </button>
@@ -1089,10 +1125,10 @@ export function HarnessApp() {
           <div className="sidebar-bottom">
             <button
               className="connections-link"
-              onClick={() => setConnectOpen(true)}
+              onClick={() => { setSidebar(false); setConnectOpen(true); }}
             >
               <span className="connection-icon">
-                <KeyRound size={16} />
+                <Link2 size={16} />
               </span>
               <span>
                 <strong>Your models</strong>
@@ -1118,7 +1154,7 @@ export function HarnessApp() {
               </span>
               <button
                 className="icon-button"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => { setSidebar(false); setSettingsOpen(true); }}
                 aria-label="Workspace settings"
               >
                 <Settings2 size={16} />
@@ -1126,17 +1162,21 @@ export function HarnessApp() {
             </div>
           </div>
         </aside>
-        <main className="app-main">
+        <main className="app-main" data-view={view} inert={compactViewport && sidebarOpen} aria-hidden={compactViewport && sidebarOpen ? true : undefined}>
           <header className="chat-header">
             <div className="header-left">
               <button
-                className="icon-button mobile-menu"
-                onClick={() => setSidebar(true)}
-                aria-label="Open sidebar"
-                aria-expanded={sidebarOpen}
+                ref={sidebarToggle}
+                className="icon-button sidebar-toggle"
+                onClick={toggleSidebar}
+                aria-label={sidebarVisible ? "Hide sidebar" : "Open sidebar"}
+                aria-expanded={sidebarVisible}
+                aria-controls="workspace-sidebar"
+                title="Toggle sidebar (⌘\\)"
               >
                 <PanelLeft size={19} />
               </button>
+              <button className="header-brand" onClick={newChat} aria-label="Harness home"><Mark small /><span>harness</span><small>beta</small></button>
               <div className="model-select-wrap">
                 {data?.connections.length ? (
                   <>
@@ -1184,7 +1224,7 @@ export function HarnessApp() {
                   }}
                 >
                   <ExpertAvatar role={persona.role} color={persona.color} />
-                  {persona.role}
+                  <span className="persona-chip-label">{persona.role}</span>
                   <Settings2 size={12} />
                 </button>
               )}
@@ -1255,7 +1295,7 @@ export function HarnessApp() {
                   )}
                 </h1>
                 <p>
-                  Choose who your AI should be. We’ll take care of the context.
+                  Choose your perspective. Make room for a better conversation.
                 </p>
               </div>
               <form
@@ -1326,12 +1366,12 @@ export function HarnessApp() {
                   onClick={() => setConnectOpen(true)}
                 >
                   <span className="nudge-icon">
-                    <KeyRound size={16} />
+                    <Link2 size={16} />
                   </span>
                   <span>
                     <strong>Bring the models you already love.</strong>
                     <small>
-                      Connect an API key from Claude, OpenAI, Gemini, and more.
+                      Connect with your Claude or ChatGPT account.
                     </small>
                   </span>
                   <ArrowRight size={16} />
@@ -1383,6 +1423,7 @@ export function HarnessApp() {
                     <button
                       key={p.role}
                       className="preset-card"
+                      style={{ "--card-tint": p.color } as CSSProperties}
                       onClick={() => {
                         setRole(p.role);
                         setFocus("");
@@ -1396,6 +1437,7 @@ export function HarnessApp() {
                       >
                         <p.icon size={21} />
                       </span>
+                      <span className="preset-category">{p.category}</span>
                       <strong>{p.role}</strong>
                       <small>{p.note}</small>
                       <ArrowRight className="preset-arrow" size={14} />
@@ -1405,11 +1447,11 @@ export function HarnessApp() {
               </section>
               <div className="home-foot">
                 <ShieldCheck size={12} />
-                <span>API keys stay encrypted. Your expert stays yours.</span>
+                <span>Your accounts. Your conversations. Your expert.</span>
               </div>
             </div>
           ) : (
-            <div className="conversation-layout">
+            <div className="conversation-layout" ref={conversationRef}>
               <div className="message-column" aria-busy={busy}>
                 {chat?.messages.map((m, index) => (
                   <article key={m.id} className={`message-row ${m.role}`}>
@@ -1528,9 +1570,9 @@ export function HarnessApp() {
                     </div>
                   </article>
                 ))}
-                <div ref={bottom} />
+                <div className="conversation-end" ref={bottom} />
               </div>
-              <div className="composer-zone">
+              <div className="composer-zone" ref={composerRef}>
                 <div className="composer-box">
                   <div className="attachment-list">
                     {attachments.map((a, i) => (
@@ -1624,7 +1666,11 @@ export function HarnessApp() {
                     )}
                   </div>
                 </div>
-                <div className="composer-disclaimer">
+                {selected?.provider === "chatgpt" && <div className="plan-usage-note">
+                <span>Using ChatGPT plan</span>
+                <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage usage</a>
+              </div>}
+              <div className="composer-disclaimer">
                   {usage
                     ? `${usage.inputTokens.toLocaleString()} input · ${usage.outputTokens.toLocaleString()} output tokens · `
                     : ""}
@@ -1865,7 +1911,7 @@ export function HarnessApp() {
           <div>
             <span>
               <strong>Your models</strong>
-              <small>Manage your encrypted provider connections.</small>
+              <small>Manage your Claude and ChatGPT accounts.</small>
             </span>
             <Button
               variant="outline"
@@ -1885,10 +1931,9 @@ export function HarnessApp() {
           <section className="settings-note">
             <ShieldCheck size={19} />
             <p>
-              Provider API keys are encrypted on the server and only their last
-              four characters are displayed. Your role’s instructions are
-              prepared privately. API usage is billed by your provider; chat
-              subscriptions aren’t API keys.
+              Connect your accounts through secure sign-in. Your role’s
+              instructions are prepared privately. Usage follows your Claude
+              or ChatGPT plan and its limits.
             </p>
           </section>
           <div className="shortcuts">
@@ -1916,239 +1961,5 @@ export function HarnessApp() {
             : ""}
       </div>
     </>
-  );
-}
-
-function Connections({
-  open,
-  onOpenChange,
-  connections,
-  onSaved,
-  onRemoved,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  connections: Connection[];
-  onSaved: (c: Connection) => Promise<void>;
-  onRemoved: (id: string) => Promise<void>;
-}) {
-  const [provider, setProvider] = useState("openai"),
-    [key, setKey] = useState(""),
-    [baseUrl, setBaseUrl] = useState(""),
-    [name, setName] = useState(""),
-    [saving, setSaving] = useState(false),
-    [error, setError] = useState(""),
-    [deleting, setDeleting] = useState("");
-  useEffect(() => {
-    if (!open) {
-      setKey("");
-      setError("");
-    }
-  }, [open]);
-  const info = PROVIDERS.find((p) => p.id === provider)!;
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const c = await api<Connection>("/api/connections", "POST", {
-        provider,
-        apiKey: key,
-        ...(name.trim() ? { name: name.trim() } : {}),
-        ...(provider === "compatible" ? { baseUrl } : {}),
-      });
-      setKey("");
-      await onSaved(c);
-      toast.success(
-        `${c.name} connected. ${c.models.length} models available.`,
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!saving) onOpenChange(v);
-      }}
-      title="Bring your intelligence."
-      description="Your favorite models, together in one thoughtful space."
-      className="connections-dialog"
-    >
-      <div className="connections-body">
-        <div className="provider-picker">
-          {PROVIDERS.map((p) => (
-            <button
-              key={p.id}
-              className={provider === p.id ? "active" : ""}
-              aria-pressed={provider === p.id}
-              onClick={() => {
-                setProvider(p.id);
-                setKey("");
-                setError("");
-              }}
-              disabled={saving}
-            >
-              <span className={`provider-symbol ${p.id}`}>{p.symbol}</span>
-              <span>
-                <strong>{p.name}</strong>
-                <small>{p.description}</small>
-              </span>
-              <ChevronRight size={13} />
-            </button>
-          ))}
-        </div>
-        <div className="connection-form-area">
-          <form onSubmit={submit}>
-            <div className="provider-form-title">
-              <span className={`provider-symbol large ${provider}`}>
-                {info.symbol}
-              </span>
-              <div>
-                <h3>Connect {info.name}</h3>
-                <p>A direct connection to your provider.</p>
-              </div>
-            </div>
-            <label htmlFor="api-key">API key</label>
-            <input
-              id="api-key"
-              type="password"
-              autoComplete="new-password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={
-                provider === "compatible"
-                  ? "Your endpoint’s API key"
-                  : "Paste your API key"
-              }
-              required
-              maxLength={4096}
-              disabled={saving}
-            />
-            {info.link && (
-              <a
-                className="get-key-link"
-                href={info.link}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Get an API key <ExternalLink size={11} />
-              </a>
-            )}
-            {provider === "compatible" && (
-              <>
-                <label htmlFor="base-url">API base URL</label>
-                <input
-                  id="base-url"
-                  type="url"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://openrouter.ai/api/v1"
-                  required
-                  maxLength={400}
-                />
-                <p className="field-help">
-                  An OpenAI-compatible /v1 endpoint. Local model addresses
-                  require the server’s local-model setting.
-                </p>
-              </>
-            )}
-            <label htmlFor="connection-name">
-              Connection name <span>optional</span>
-            </label>
-            <input
-              id="connection-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={`My ${info.name} account`}
-              maxLength={80}
-            />
-            {error && (
-              <div className="form-error" role="alert">
-                <AlertCircle size={15} />
-                {error}
-              </div>
-            )}
-            <Button
-              type="submit"
-              disabled={saving || !key.trim()}
-              className="connect-submit"
-            >
-              {saving ? (
-                <LoaderCircle size={15} className="spin" />
-              ) : (
-                <KeyRound size={15} />
-              )}{" "}
-              {saving ? "Validating & finding models…" : "Validate & connect"}
-            </Button>
-            <div className="key-privacy">
-              <ShieldCheck size={14} />
-              <p>
-                Encrypted before storage. Never returned to your browser after
-                saving.
-              </p>
-            </div>
-          </form>
-        </div>
-      </div>
-      {connections.length > 0 && (
-        <div className="saved-connections">
-          <h4>
-            YOUR CONNECTIONS <span>{connections.length}</span>
-          </h4>
-          {connections.map((c) => (
-            <div key={c.id}>
-              <span className={`provider-symbol ${c.provider}`}>
-                {PROVIDERS.find((p) => p.id === c.provider)?.symbol}
-              </span>
-              <span>
-                <strong>{c.name}</strong>
-                <small>
-                  {c.models.length} models · •••• {c.last4}
-                </small>
-              </span>
-              <span className="connected-badge">
-                <Check size={10} />
-                Connected
-              </span>
-              <button
-                className="icon-button"
-                aria-label={`Disconnect ${c.name}`}
-                disabled={!!deleting || saving}
-                onClick={async () => {
-                  setDeleting(c.id);
-                  try {
-                    await api(`/api/connections/${c.id}`, "DELETE");
-                    await onRemoved(c.id);
-                    toast("Provider disconnected. Its key was removed.");
-                  } catch (e) {
-                    toast.error((e as Error).message);
-                  } finally {
-                    setDeleting("");
-                  }
-                }}
-              >
-                {deleting === c.id ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <Trash2 size={14} />
-                )}
-              </button>
-            </div>
-          ))}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={saving || !!deleting}
-            onClick={() => onOpenChange(false)}
-          >
-            Done <ArrowRight size={14} />
-          </Button>
-        </div>
-      )}
-    </Dialog>
   );
 }

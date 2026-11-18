@@ -25,9 +25,9 @@ const bootstrap: Bootstrap = {
   user: { id: "recovery-user", name: "Recovery workspace", development: true },
   connections: [{
     id: "recovery-provider",
-    provider: "openai",
+    provider: "chatgpt",
     name: "Recovery model",
-    last4: "1234",
+    accountLabel: "Connected account",
     models: [{
       id: "recovery-model",
       name: "Recovery model",

@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS provider_connections (
  models JSONB NOT NULL DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS provider_connections_user ON provider_connections(user_id);
+CREATE TABLE IF NOT EXISTS chatgpt_registrations (
+ user_id TEXT PRIMARY KEY REFERENCES users(id), client_id TEXT NOT NULL, subject TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS personas (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), role TEXT NOT NULL,
  focus TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL, cache_key TEXT NOT NULL,

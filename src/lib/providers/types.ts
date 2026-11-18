@@ -1,5 +1,5 @@
 export type ProviderId =
-  "openai" | "anthropic" | "deepseek" | "google" | "compatible";
+  "chatgpt" | "claude" | "openai" | "anthropic" | "deepseek" | "google" | "compatible";
 
 export interface Model {
   id: string;

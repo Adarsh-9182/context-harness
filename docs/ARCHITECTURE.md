@@ -7,9 +7,9 @@ flowchart TD
   UI[React chat] --> AUTH[Identity and CSRF]
   AUTH --> SERVICE[Conversation and persona services]
   SERVICE --> DB[(Postgres / local PGlite)]
-  SERVICE --> KEYS[AES-256-GCM envelope]
-  KEYS --> ADAPTER[Provider adapter]
-  ADAPTER --> MODEL[Selected model API]
+  SERVICE --> SESSION[Encrypted ChatGPT session / isolated Claude profile]
+  SESSION --> ADAPTER[Account adapter]
+  ADAPTER --> MODEL[Responses API / official Claude client]
   MODEL --> GUARD[Disclosure checks and SSE]
   GUARD --> UI
 ```
@@ -23,14 +23,15 @@ The database schema is initialized idempotently using parameterized SQL. Postgre
 | Table                             | Responsibility                                                                               |
 | --------------------------------- | -------------------------------------------------------------------------------------------- |
 | `users`                           | Account identity and Auth.js user fields.                                                    |
-| `provider_connections`            | Owner, provider/model metadata, last four key characters, authenticated ciphertext envelope. |
+| `provider_connections`            | Owner, account/model metadata, encrypted ChatGPT session or isolated Claude profile handle. |
+| `chatgpt_registrations` | Verified subject/client mapping retained after disconnect; no tokens. |
 | `personas`                        | Private definition/prompt, role/focus, greeting, cache key, template version.                |
 | `conversations`                   | Owner, persona, connection/model, title and custom-title flag, timestamps, soft archival.    |
 | `messages`                        | Visible content, image attachments, completion status, timestamps.                           |
 | `usage_logs`                      | Provider/model, tokens, latency, and status without content or credentials.                  |
 | `accounts`, `verification_tokens` | OAuth account links and expiring email sign-in tokens.                                       |
 
-Provider-key encryption is separate from message storage. Messages and persona definitions are not application-encrypted; production database encryption/access controls remain operator responsibilities. Preserve the master key separately from encrypted connection backups.
+ChatGPT session encryption is separate from message storage. Messages and persona definitions are not application-encrypted; production database encryption/access controls remain operator responsibilities. Preserve the master key separately from encrypted connection backups.
 
 ## Persona lifecycle
 
@@ -42,7 +43,7 @@ Provider-key encryption is separate from message storage. Messages and persona d
 6. Persist server-side; return only id, role, focus, greeting, and color.
 7. Inject the same stored prompt on every chat request through each provider's appropriate instruction field. Switching models changes the connection, not the persona.
 
-Cache hits avoid another compilation call. New role compilation can incur provider charges. Context does not establish world-best expertise or professional qualifications.
+Cache hits avoid another compilation call. New role compilation consumes the connected account’s usage allowance. Context does not establish world-best expertise or professional qualifications.
 
 ## Streaming and history
 
@@ -69,14 +70,19 @@ Lists and downloads are rate limited and not cached. Mutations require same-orig
 
 Public serializers omit generated instructions. Direct extraction requests are refused before a provider call. A rolling guard retains a short suffix, detects known prompt substrings and an integrity marker across chunk boundaries, and stops literal disclosures before protected text is emitted. The compiler checks greetings too.
 
-This cannot guarantee secrecy against arbitrary model paraphrase or transformation. No provider key or account secret is placed inside personas. Role filters and boundary instructions also cannot establish comprehensive safety or clinical correctness.
+This cannot guarantee secrecy against arbitrary model paraphrase or transformation. No account secret is placed inside personas. Role filters and boundary instructions also cannot establish comprehensive safety or clinical correctness.
+
+## Account connections
+
+See [Account connections](ACCOUNT-CONNECTIONS.md) for the browser sign-in protocol, callback ownership, renewable-session storage, native-client isolation, and deployment limits. Existing API-key connections are retained in storage for migration but are omitted from account lists and cannot be used for new model requests. Their conversations remain readable and can be switched to a connected account.
 
 ## Production boundaries
 
 - Production requires Postgres, Redis, a base64 32-byte master key, an independent Auth.js secret, an exact application origin, and a configured sign-in provider. Missing core configuration fails closed.
 - Explicit development identity is restricted to loopback requests and disabled in production. Test identity/provider overrides are unavailable in production.
 - Mutations require matching Origin, JSON, a request guard header, validated input, and account ownership.
-- Generic endpoints require approved HTTPS hosts/public DNS; redirects are forbidden. DNS checks are not connection-pinned. Restrict production outbound network access and approve only trusted domains.
+- Connections accept only `chatgpt` or `claude` with no credential fields. ChatGPT uses official OAuth/Responses endpoints; redirect following is disabled. Account sign-in is restricted to local origins.
+- Claude runs with a separate config directory, no inherited API credentials, no external tools, MCP servers, Chrome, hooks, or persisted conversation sessions. Harness supplies the fitted transcript on every turn.
 - Logs allow only metadata fields. Usage records support per-provider latency/status analysis without keys or message text.
 - Adapters normalize tool-call proposals; no external tool executor is enabled. Video Editor roles can provide plans/specifications, not silently edit a video.
 - Horizontal scaling needs a distributed generation lock; the current generation lock is process-local. Redis backs rate limits; Auth.js uses signed JWT sessions.

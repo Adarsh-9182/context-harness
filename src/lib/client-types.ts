@@ -10,7 +10,7 @@ export type Connection = {
   id: string;
   provider: string;
   name: string;
-  last4: string;
+  accountLabel?: string;
   models: Model[];
 };
 export type Persona = {
@@ -51,4 +51,13 @@ export type Bootstrap = {
   connections: Connection[];
   personas: Persona[];
   conversations: Conversation[];
+};
+export type AccountLogin = {
+  id: string;
+  provider: "chatgpt" | "claude";
+  status: "pending" | "connected" | "failed" | "cancelled";
+  authUrl?: string;
+  connection?: Connection;
+  message?: string;
+  expiresAt: number;
 };

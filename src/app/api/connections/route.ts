@@ -3,8 +3,8 @@ import { requireMutation, parseJson, errorResponse } from "@/lib/server/http";
 import {
   bootstrap,
   connectionSchema,
-  saveConnection,
 } from "@/lib/server/service";
+import { requireLocalAccounts, startAccountLogin } from "@/lib/server/account-logins";
 import { consumeRateLimit } from "@/lib/server/rate-limit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,10 +22,12 @@ export async function POST(request: Request) {
   try {
     requireMutation(request);
     const user = await requestUser(request);
+    requireLocalAccounts(request);
     await consumeRateLimit(user.id, "connection");
     const input = await parseJson(request, connectionSchema);
-    return Response.json(await saveConnection(user, input), {
-      status: 201,
+    const login = await startAccountLogin(user.id, input.provider);
+    return Response.json(login, {
+      status: login.status === "connected" ? 201 : 202,
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {

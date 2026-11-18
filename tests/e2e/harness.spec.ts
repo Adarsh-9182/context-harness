@@ -1,30 +1,17 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function connect(
-  page: Page,
-  provider: "OpenAI" | "Anthropic",
-  key: string,
-) {
+async function connect(page: Page, provider: "ChatGPT" | "Claude") {
   await page.getByRole("button", { name: /Your models/ }).click();
-  if (provider === "Anthropic")
-    await page.getByRole("button", { name: /Anthropic Claude models/ }).click();
-  await page.getByLabel("API key", { exact: true }).fill(key);
-  const saved = page.waitForResponse(
-    (r) =>
-      r.url().endsWith("/api/connections") && r.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Validate & connect" }).click();
+  const saved = page.waitForResponse(r => r.url().endsWith("/api/connections") && r.request().method() === "POST");
+  await page.getByRole("button", { name: `Connect with ${provider}`, exact: true }).click();
   const response = await saved;
-  expect(response.status()).toBe(201);
+  expect([201, 202]).toContain(response.status());
   const text = await response.text();
-  expect(text).not.toContain(key);
-  expect(text).not.toContain("encrypted_key");
-  await expect(
-    page.getByText(/Connected/, { exact: true }).first(),
-  ).toBeVisible();
+  expect(text).not.toMatch(/accessToken|refreshToken|encrypted_key|apiKey/);
+  await expect(page.getByText("Connected", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Done", exact: true }).click();
 }
-test("two encrypted connections → role only → streaming, math, code, switch, regenerate, edit and refusal", async ({
+test("two account connections → role only → streaming, math, code, switch, regenerate, edit and refusal", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -33,8 +20,8 @@ test("two encrypted connections → role only → streaming, math, code, switch,
   await expect(
     page.getByRole("heading", { name: /A mind for whatever/ }),
   ).toBeVisible();
-  await connect(page, "OpenAI", "fixture-openai-secret-1234");
-  await connect(page, "Anthropic", "fixture-anthropic-secret-5678");
+  await connect(page, "ChatGPT");
+  await connect(page, "Claude");
   await page
     .getByLabel("Choose model")
     .selectOption({ label: "Harness Test GPT" });
@@ -63,12 +50,17 @@ test("two encrypted connections → role only → streaming, math, code, switch,
   await expect(
     page.getByText("What would you like to try next?"),
   ).toBeVisible();
+  await expect.poll(async () => {
+    const answer = await page.getByText("What would you like to try next?", { exact: true }).boundingBox();
+    const composer = await page.locator(".composer-box").boundingBox();
+    return !!answer && !!composer && answer.y + answer.height < composer.y;
+  }).toBe(true);
   await expect(page.locator(".katex").first()).toBeVisible();
   await expect(page.locator(".code-block").first()).toBeVisible();
   await expect(page.getByRole("cell", { name: "Hypotenuse" })).toBeVisible();
   await page
     .getByLabel("Choose model")
-    .selectOption({ label: "Harness Test Claude" });
+    .selectOption({ label: "Claude · account default" });
   await expect(
     page.getByRole("button", { name: "Mathematician", exact: true }),
   ).toBeVisible();
@@ -113,30 +105,41 @@ test("two encrypted connections → role only → streaming, math, code, switch,
   await page.screenshot({ path: "test-results/chat-desktop.png" });
   expect(errors).toEqual([]);
 });
-test("mobile role gallery, invalid-key feedback, and responsive connections", async ({
-  page,
-}) => {
+test("mobile connections show only Claude and ChatGPT with sign-in failure recovery", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: /A mind for whatever/ }),
-  ).toBeVisible();
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth),
-  ).toBeLessThanOrEqual(390);
-  await page
-    .getByRole("button", { name: "Connect a model", exact: true })
-    .click();
-  await page.getByLabel("API key", { exact: true }).fill("invalid-test-key");
-  await page.getByRole("button", { name: "Validate & connect" }).click();
-  await expect(page.getByRole("alert")).toContainText(/key|authentication/i);
-  await expect(page.getByLabel("API key", { exact: true })).toHaveValue(
-    "invalid-test-key",
-  );
-  await page.screenshot({
-    path: "test-results/connect-mobile.png",
-    fullPage: true,
-  });
+  await page.getByRole("button", { name: "Connect a model", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Connect with ChatGPT", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect with Claude", exact: true })).toBeVisible();
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  await expect(page.getByRole("dialog")).not.toContainText(/API key|Gemini|DeepSeek|OpenAI-compatible/);
+  await page.route("**/api/connections", route => route.fulfill({ status: 202, json: {
+    id: "failed-fixture", provider: "claude", status: "failed", message: "Claude sign-in was not completed. Try again.", expiresAt: Date.now() + 60000,
+  } }));
+  await page.getByRole("button", { name: "Connect with Claude", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Claude sign-in was not completed");
+  await expect(page.getByRole("button", { name: "Connect with Claude", exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: "test-results/connect-mobile.png", fullPage: true });
+});
+test("desktop sign-in can be cancelled and retried without losing a role draft", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("What should your AI be?", { exact: true }).fill("Astronomer");
+  await page.getByRole("button", { name: "Create expert", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.screenshot({ path: "test-results/connect-desktop.png", animations: "disabled" });
+  await page.route("**/api/connections", route => route.fulfill({ status: 202, json: {
+    id: "pending-browser-fixture", provider: "claude", status: "pending", expiresAt: Date.now() + 60000,
+  } }));
+  await page.route("**/api/connections/login/pending-browser-fixture", route => route.fulfill({ json: {
+    id: "pending-browser-fixture", provider: "claude", status: route.request().method() === "DELETE" ? "cancelled" : "pending", expiresAt: Date.now() + 60000,
+  } }));
+  await page.getByRole("button", { name: "Connect with Claude", exact: true }).click();
+  await expect(page.getByText("Finish connecting with Claude", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Connect with Claude", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByLabel("What should your AI be?", { exact: true })).toHaveValue("Astronomer");
 });
 test("home is keyboard accessible and a role draft survives connection onboarding", async ({
   page,
@@ -166,7 +169,7 @@ test("stop generation, search shortcut, and unsent files stay with their convers
   await expect(
     page.getByRole("heading", { name: /A mind for whatever/ }),
   ).toBeVisible();
-  await connect(page, "OpenAI", "fixture-cancellation-secret-9012");
+  await connect(page, "ChatGPT");
   await page
     .getByLabel("What should your AI be?", { exact: true })
     .fill("Teacher");
@@ -174,7 +177,7 @@ test("stop generation, search shortcut, and unsent files stay with their convers
     .getByRole("button", { name: "Create expert", exact: true })
     .click();
   await expect(page.getByLabel("Message your expert")).toBeVisible();
-  await connect(page, "Anthropic", "fixture-extra-connection-3456");
+  await connect(page, "Claude");
   await expect(
     page.getByLabel("Choose model").locator("option:checked"),
   ).toHaveText("Harness Test GPT");

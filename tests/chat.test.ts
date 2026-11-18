@@ -92,6 +92,7 @@ import {
 import { POST as chatRoute } from "../src/app/api/chat/route";
 import { db, resetDbForTests } from "../src/lib/server/db";
 import { resetRateLimitsForTests } from "../src/lib/server/rate-limit";
+import { saveAccountConnection } from "../src/lib/server/account-connections";
 import { chatSchema, commitTurn, prepareTurn } from "../src/lib/server/service";
 
 function req(
@@ -154,33 +155,16 @@ async function seededTranscript() {
 }
 
 describe("server-proxied chat integration", () => {
-  it("connects two distinct providers and encrypts both keys without returning them", async () => {
-    openai = await body(
-      await connectionRoute(
-        req("/api/connections", {
-          provider: "openai",
-          apiKey: "example-openai-secret-1234",
-        }),
-      ),
-    );
-    anthropic = await body(
-      await connectionRoute(
-        req("/api/connections", {
-          provider: "anthropic",
-          apiKey: "example-anthropic-secret-5678",
-        }),
-      ),
-    );
-    expect(openai.last4).toBe("1234");
-    expect(anthropic.last4).toBe("5678");
+  it("uses two signed-in accounts and encrypts credentials without returning them", async () => {
+    const models = [{ id: mocks.modelName, name: "Test chat model", contextWindow: 16000, maxOutputTokens: 4000, supportsImages: true, supportsTools: false }];
+    openai = await saveAccountConnection("test-alice", {
+      kind: "chatgpt", clientId: "fixture-client", subject: "fixture-user", accessToken: "example-account-access", refreshToken: "example-renewable-secret", idToken: "example-id-token", expiresAt: Date.now() + 3600000, scopes: ["resource.invoke", "chatgpt.tokens.use.direct"],
+    }, models);
+    anthropic = await saveAccountConnection("test-alice", { kind: "claude", profileId: "27aa9d0f-0844-4682-81d9-a19be34ad72c" }, models);
+    expect(openai).not.toHaveProperty("last4");
+    expect(anthropic).not.toHaveProperty("encrypted_key");
     expect(JSON.stringify([openai, anthropic])).not.toContain("example-");
-    const rows = (
-      await (
-        await db()
-      ).query<{ encrypted_key: unknown }>(
-        "SELECT encrypted_key FROM provider_connections",
-      )
-    ).rows;
+    const rows = (await (await db()).query("SELECT encrypted_key FROM provider_connections")).rows;
     expect(JSON.stringify(rows)).not.toContain("example-");
     expect(rows).toHaveLength(2);
   });
@@ -269,7 +253,7 @@ describe("server-proxied chat integration", () => {
       )
     ).text();
     const last = mocks.calls.at(-1)!;
-    expect(last.provider).toBe("anthropic");
+    expect(last.provider).toBe("claude");
     expect(last.systemPrompt).toBe(before);
     expect((last.messages as unknown[]).length).toBeGreaterThan(1);
   });
@@ -360,7 +344,7 @@ describe("server-proxied chat integration", () => {
         "x-harness-test-user": "alice",
       },
       body: JSON.stringify({
-        provider: "openai",
+        provider: "chatgpt",
         apiKey: "do-not-return-this",
       }),
     });
@@ -419,17 +403,14 @@ describe("server-proxied chat integration", () => {
       await (await db()).query("UPDATE provider_connections SET models=$1 WHERE id=$2", [JSON.stringify(row.models), connectionId]);
     }
   });
-  it("never returns a complete short credential, including legacy suffix metadata", async () => {
-    for (const secret of ["x", "tiny", "éé"]) {
-      const connection = await body(await connectionRoute(req("/api/connections", { provider: "compatible", apiKey: secret })));
-      expect(connection.last4).toBe("");
-      const row = (await (await db()).query<{ last4: string; encrypted_key: unknown }>("SELECT last4,encrypted_key FROM provider_connections WHERE id=$1", [connection.id])).rows[0];
-      expect(row.last4).toBe("");
-      expect(JSON.stringify(row.encrypted_key)).not.toContain(`\"${secret}\"`);
-      // A row saved by the previous implementation may hold a full short suffix.
-      await (await db()).query("UPDATE provider_connections SET last4=$1 WHERE id=$2", [secret, connection.id]);
-      const loaded = await body(await bootstrapRoute(req("/api/bootstrap")));
-      expect(loaded.connections.find((c: any) => c.id === connection.id).last4).toBe("");
+  it("rejects API-key submissions and additional providers", async () => {
+    for (const input of [
+      { provider: "compatible", apiKey: "tiny" }, { provider: "openai", apiKey: "secret" },
+      { provider: "chatgpt", apiKey: "secret" }, { provider: "google" },
+    ]) {
+      const response = await connectionRoute(req("/api/connections", input));
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain("secret");
     }
   });
   it.each([

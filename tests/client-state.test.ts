@@ -10,9 +10,9 @@ import {
 import type { Connection, Attachment } from "../src/lib/client-types";
 const connection: Connection = {
   id: "new-provider",
-  provider: "anthropic",
+  provider: "claude",
   name: "Claude",
-  last4: "1234",
+  accountLabel: "Connected account",
   models: [
     {
       id: "account-model",

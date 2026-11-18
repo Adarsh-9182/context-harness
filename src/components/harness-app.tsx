@@ -2,6 +2,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -59,6 +60,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Markdown } from "@/components/markdown";
 import { AccountConnections as Connections } from "@/components/account-connections";
+import { WebConnections } from "@/components/web-connections";
 import { ContextBuilder } from "@/components/context-builder";
 import { ContextDetails } from "@/components/context-details";
 import { ProfessionLibrary } from "@/components/profession-library";
@@ -68,6 +70,8 @@ import { useUI } from "@/lib/store";
 import { chatFrames, ChatResponseError, type CommittedTurn } from "@/lib/chat-stream";
 import { PROFESSION_COUNT } from "@/lib/professions";
 import type { ProfessionBrief } from "@/lib/profession-brief";
+import { fetchBrowserWorkspace } from "@/lib/browser-workspace";
+import { fetchFromLocalHarness, getLocalBridgeConnected, observeLocalBridge } from "@/lib/web-bridge-client";
 import { isVideoAttachment, sampleVideoAttachment, VIDEO_ACCEPT } from "@/lib/video-attachment";
 import type {
   Bootstrap,
@@ -197,12 +201,15 @@ const safeColor = (color?: string) =>
         rose: "#f4e3e5",
         indigo: "#e0e4f5",
       }[color || "violet"] || "#eae4fb";
-async function api<T>(
+type WorkspaceFetch = (path: string, init?: RequestInit) => Promise<Response>;
+const nativeFetch: WorkspaceFetch = (path, init) => fetch(path, init);
+async function requestWorkspace<T>(
+  transport: WorkspaceFetch,
   path: string,
   method = "GET",
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(path, {
+  const res = await transport(path, {
     method,
     headers: apiHeaders(method, body !== undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -260,7 +267,13 @@ function ExpertAvatar({
   );
 }
 
-export function WorkspaceAccess({ development }: { development: boolean }) {
+export function WorkspaceAccess({ development, hosted, linked }: { development: boolean; hosted?: boolean; linked?: boolean }) {
+  if (hosted) return (
+    <section className="settings-note" aria-label="Web workspace">
+      <ShieldCheck size={19} />
+      <p>{linked ? "This tab is linked to your local Harness workspace." : "Briefs in this workspace are saved in this browser. Link local Harness to use your models and conversations."}</p>
+    </section>
+  );
   if (development)
     return (
       <section className="settings-note" aria-label="Local development workspace">
@@ -279,7 +292,11 @@ export function WorkspaceAccess({ development }: { development: boolean }) {
   );
 }
 
-export function HarnessApp() {
+export function HarnessApp({ hosted = false }: { hosted?: boolean }) {
+  const [linked, setLinked] = useState(false);
+  const workspaceFetch = hosted ? (linked ? fetchFromLocalHarness : fetchBrowserWorkspace) : nativeFetch;
+  const api = useMemo(() => <T,>(path: string, method?: string, body?: unknown) =>
+    requestWorkspace<T>(workspaceFetch, path, method, body), [workspaceFetch]);
   const [data, setData] = useState<Bootstrap | null>(null),
     [loading, setLoading] = useState(true),
     [fatal, setFatal] = useState("");
@@ -382,12 +399,44 @@ export function HarnessApp() {
       );
     }
     return result;
-  }, []);
+  }, [api]);
   useEffect(() => {
-    refresh()
-      .catch((e) => setFatal(e.message))
-      .finally(() => setLoading(false));
-  }, [refresh]);
+    let active = true;
+    refresh(() => active)
+      .then(() => { if (active) setFatal(""); })
+      .catch((e) => {
+        if (!active) return;
+        if (hosted && linked) toast.error(e.message);
+        else setFatal(e.message);
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [hosted, linked, refresh]);
+  useEffect(() => {
+    if (!hosted) return;
+    const sync = () => setLinked(getLocalBridgeConnected());
+    const unsubscribe = observeLocalBridge(sync);
+    sync();
+    return unsubscribe;
+  }, [hosted]);
+  useEffect(() => {
+    if (!hosted || linked) return;
+    viewEpoch.current++;
+    turnEpoch.current++;
+    archivesEpoch.current++;
+    controller.current?.abort();
+    clearFiles();
+    setChat(null);
+    setView(current => current === "chat" ? "home" : current);
+    setContextDetailsOpen(false);
+    setRequestedContextId(undefined);
+    setEditId(null);
+    setRenameTarget(null);
+    setArchivesOpen(false);
+    setArchives([]);
+    setTurnIssue(null);
+    setBusy(false);
+  }, [hosted, linked]);
   useEffect(() => {
     function openAccountLink() {
       if (window.location.hash !== "#connect") return;
@@ -791,7 +840,7 @@ export function HarnessApp() {
     }
 
     try {
-      const response = await fetch("/api/chat", {
+      const response = await workspaceFetch("/api/chat", {
         method: "POST",
         headers: apiHeaders("POST", true),
         credentials: "same-origin",
@@ -1081,7 +1130,7 @@ export function HarnessApp() {
     const navigation = viewEpoch.current;
     setExporting(true);
     try {
-      const response = await fetch(`/api/conversations/${c.id}/export`, {
+      const response = await workspaceFetch(`/api/conversations/${c.id}/export`, {
         credentials: "same-origin",
         cache: "no-store",
       });
@@ -1161,9 +1210,9 @@ export function HarnessApp() {
         <Mark />
         <h1>Welcome to Harness.</h1>
         <p>{fatal}</p>
-        <a href="/api/auth/signin" className="ui-button button-primary">
+        {!hosted && <a href="/api/auth/signin" className="ui-button button-primary">
           Sign in to your workspace <ArrowRight size={16} />
-        </a>
+        </a>}
         <Button variant="ghost" onClick={() => location.reload()}>
           Try again
         </Button>
@@ -1303,7 +1352,7 @@ export function HarnessApp() {
               <span>
                 <strong>{data?.user.name || "Your workspace"}</strong>
                 <small>
-                  {data?.user.development
+                  {hosted ? (linked ? "Local Harness linked" : "Browser workspace") : data?.user.development
                     ? "Local development"
                     : "Personal workspace"}
                 </small>
@@ -1860,7 +1909,8 @@ export function HarnessApp() {
             requestAnimationFrame(() => professionTrigger.current?.focus({ preventScroll: true }));
           }} />
       )}
-      <Connections
+      {hosted ? <WebConnections open={connectOpen} linked={linked} connections={linked ? data?.connections || [] : []}
+        onOpenChange={(open) => { setConnectOpen(open); if (!open) setSetupConnecting(false); }} onRefresh={refresh} /> : <Connections
         open={connectOpen}
         onOpenChange={(open) => {
           setConnectOpen(open);
@@ -1894,7 +1944,7 @@ export function HarnessApp() {
           }
           await refresh();
         }}
-      />
+      />}
       <Dialog
         open={searchOpen}
         onOpenChange={setSearchOpen}
@@ -2120,7 +2170,7 @@ export function HarnessApp() {
               New line <kbd>Shift ↵</kbd>
             </span>
           </div>
-          <WorkspaceAccess development={data?.user.development === true} />
+          <WorkspaceAccess development={data?.user.development === true} hosted={hosted} linked={linked} />
         </div>
       </Dialog>
       <div className="sr-only" aria-live="polite" aria-atomic="true">

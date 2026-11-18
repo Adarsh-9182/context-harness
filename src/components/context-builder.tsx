@@ -62,6 +62,9 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
   const listRequest = useRef(0);
   const lastLibraryRead = useRef(0);
   const handledRequest = useRef<string | undefined>(undefined);
+  const currentRequest = useRef(request);
+  const previousRequest = useRef(request);
+  currentRequest.current = request;
   const operationPending = useRef(false);
   const builderHeading = useRef<HTMLHeadingElement>(null);
   const editorHeading = useRef<HTMLHeadingElement>(null);
@@ -93,6 +96,18 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
     } finally {
       if (attempt === listRequest.current) setLibraryLoading(false);
     }
+  }, [request]);
+
+  // Keep the current text on a workspace switch, with no saved ID from the other library.
+  useEffect(() => {
+    if (previousRequest.current === request) return;
+    previousRequest.current = request;
+    listRequest.current++;
+    lastLibraryRead.current = 0;
+    handledRequest.current = undefined;
+    setContexts([]);
+    setSaved(null);
+    setPendingSelection(null);
   }, [request]);
 
   useEffect(() => {
@@ -163,6 +178,7 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
     setReferenceFeedback(undefined);
     void perform("opening", async () => {
       const brief = await request<ContextBrief>(`/api/contexts/${encodeURIComponent(id)}`);
+      if (request !== currentRequest.current) return;
       setSaved(brief);
       setDraft(contextInput(brief));
       requestAnimationFrame(() => editorHeading.current?.focus());
@@ -242,6 +258,7 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
     const brief = saved
       ? await request<ContextBrief>(`/api/contexts/${encodeURIComponent(saved.id)}`, "PATCH", draft)
       : await request<ContextBrief>("/api/contexts", "POST", draft);
+    if (request !== currentRequest.current) throw Error("The workspace changed. Your brief is still open as a draft.");
     setSaved(brief);
     setDraft(contextInput(brief));
     setContexts(previous => [contextSummary(brief), ...previous.filter(item => item.id !== brief.id)]);

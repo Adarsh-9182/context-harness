@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+const webExport = process.env.HARNESS_WEB_EXPORT === "true";
 const config: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   devIndicators: false,
@@ -32,4 +33,11 @@ const config: NextConfig = {
     ];
   },
 };
-export default config;
+export default webExport ? {
+  outputFileTracingRoot: process.cwd(),
+  devIndicators: false,
+  output: "export",
+  distDir: ".local/web-shell",
+  // Keep the export on hosted entry points. Next's webpack loader expects a multi-value extension list.
+  pageExtensions: ["hosted.tsx", "hosted.jsx"],
+} satisfies NextConfig : config;

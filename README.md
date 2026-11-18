@@ -4,7 +4,7 @@
 
 Harness is a local AI chat app. Connect your **ChatGPT** or **Claude** account and choose from 500 searchable professions or type your own role. Before you start a chat, answer optional questions about your goal, relevant details, and expected output. Harness keeps those answers with the conversation when you switch models.
 
-Use the standalone browser workspace to build and save context. Copy the prompt to ChatGPT or Claude, or export the brief for **Import brief** in local Harness. See the [web workspace guide](docs/WEB-WORKSPACE.md).
+Open the [Harness web app](https://context-harness-web.vercel.app/) for the same profession catalog, sidebar, and Context Builder. Save briefs in your browser, or link local Harness to use its conversations and connected models in the web app. See the [web workspace guide](docs/WEB-WORKSPACE.md).
 
 ## Build reusable context
 

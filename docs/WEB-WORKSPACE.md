@@ -1,13 +1,19 @@
 # Harness web workspace
 
-The standalone web app opens directly to the context editor. Write a goal, give it a name, and pick a profession from the shared catalog. Open **More context** to add instructions, references, or an output format. Save the brief in your browser or copy the prompt and use it on the ChatGPT or Claude site.
+The [web app](https://context-harness-web.vercel.app/) uses the same Harness interface as the local app. Browse professions, answer optional setup questions, and save reusable briefs in Context Builder. With the local workspace linked, it also shows your existing chats and streams new replies from your connected models.
 
-## Move a brief between versions
+## Link your workspace
 
-Choose **Export brief** in the source workspace, then **Import brief** in the destination. The file opens as a new draft. Review it and save when ready. Both versions use the same JSON format for the five user-authored fields. Browser saves are specific to the site where you created them, so use the same transfer steps if moving to a new domain.
+1. Run Harness on the same computer with `npm start` and open `http://127.0.0.1:4318/`. Connect ChatGPT or Claude from **Your models**.
+2. In the web app, choose **Connect a model → Link local Harness**. Choose **Allow access** in the local window, then return to the web tab.
+3. Keep the link window open. Close it or choose **Unlink local Harness** when you're done. If you just connected another account locally, choose **Refresh models** in the web app.
 
-## Build and deploy
+During an approved link, the web tab requests workspace data through the local window. Provider sign-in, credentials, model requests, and linked conversation storage stay with local Harness. The link ends when either tab closes. The hosted app serves the interface and its static assets.
 
-Run `npm run build:web` with Node.js 24 or later. The build writes `index.html` and hashed assets to `.local/web-app` and prints the file list. The professions list and field limits come from the same source as the local app. Serve the output directory as a static site over HTTPS. The root `vercel.json` builds and serves the web app from this repository as a standalone Vercel project.
+## Move briefs between workspaces
 
-The browser app uses browser storage and local file selection. Direct account sign-in and streaming inside Harness are available in the native app. A remotely hosted plan integration needs a supported provider authorization path. [ChatGPT plan usage](https://developers.openai.com/siwc/token-sharing-open-source) · [Claude Code authentication terms](https://code.claude.com/docs/en/legal-and-compliance)
+Without a link, briefs are saved in this browser. Briefs from the earlier editor on this same domain appear in Context Builder. While linked, the library uses your local Harness workspace. Choose **Export brief** in the source workspace and **Import brief** in the destination to move a copy.
+
+## Build and verify
+
+Run `npm run build:web` to export the shared Next.js interface to `.local/web-shell`. The web build includes only static pages and assets. The root `vercel.json` serves that output. Run `npm run test:e2e` after building to test the browser workspace and the local link.

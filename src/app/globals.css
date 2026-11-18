@@ -1253,6 +1253,14 @@ html[data-theme="dark"] .management-error {
 .attachment-feedback-error {
   color: var(--text);
 }
+.web-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-block: 15px;
+}
+.web-link-actions > a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 .edit-message {
   border: 1px solid var(--border);
   background: var(--panel);

@@ -56,7 +56,7 @@ node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('b
 
 Build with `docker build --target production -t harness .`, then supply production secrets through your hosting secret manager. The standalone image runs as an unprivileged Node user on port 3000. Configure TLS, backups, database encryption/access controls, outbound network restrictions, and monitoring on the host.
 
-The app requires Node-compatible hosting. The retained `.openai/hosting.json` belongs to the earlier static prototype; it does **not** deploy this backend to Cloudflare Workers or static Sites hosting.
+The app requires Node-compatible hosting. See the [deployment guide](docs/DEPLOYMENT.md) for Railway setup, authentication, and health checks. The retained `.openai/hosting.json` belongs to the earlier static prototype; it does **not** deploy this backend to Cloudflare Workers or static Sites hosting.
 
 ## Verify
 
@@ -69,7 +69,7 @@ npm run test:e2e
 
 Tests cover protocol adapters, encryption, persona compilation, safe API fields, account isolation, streaming, switching, cancellation, and disclosure checks. The Playwright flow uses explicitly configured local upstream fixtures; it does not consume paid keys. On a clean CI runner, install the browser with `npx playwright install chromium`.
 
-Mocked tests establish covered software behavior, not provider availability or model quality. Real provider access is checked when saving a real key. Docker was unavailable on the development Mac, so container execution still needs verification on a Docker-capable host.
+Mocked tests establish covered software behavior, not provider availability or model quality. Real provider access is checked when saving a real key. GitHub's production container workflow builds the Docker target, exercises Postgres and Redis, and verifies authentication boundaries and static assets. See the [verification receipt](docs/VERIFICATION.md) and workflow results.
 
 ## Security and current limits
 

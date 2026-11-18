@@ -106,6 +106,10 @@ test("two encrypted connections → role only → streaming, math, code, switch,
   ).not.toBeVisible();
   await page.getByRole("button", { name: "Switch to dark theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("button", { name: "New conversation" })).toHaveCSS(
+    "background-color",
+    "rgb(40, 40, 45)",
+  );
   await page.screenshot({ path: "test-results/chat-desktop.png" });
   expect(errors).toEqual([]);
 });

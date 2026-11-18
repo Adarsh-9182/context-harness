@@ -8,7 +8,7 @@ target.parent.mkdir(parents=True, exist_ok=True)
 files = ['package.json', 'package-lock.json', 'README.md', '.gitignore', '.env.example',
          'AGENTS.md', 'server.mjs', 'next.config.ts', 'next-env.d.ts', 'tsconfig.json',
          'postcss.config.mjs', 'vitest.config.ts', 'playwright.config.ts',
-         'Dockerfile', 'compose.yaml', '.dockerignore']
+         'Dockerfile', 'compose.yaml', 'compose.ci.yaml', '.dockerignore']
 for directory in ['src', 'docs', 'tests', 'scripts', 'public', '.github', 'dist']:
     for path in sorted((root / directory).rglob('*')):
         if path.is_file() and 'downloads' not in path.parts:

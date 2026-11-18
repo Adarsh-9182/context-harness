@@ -47,7 +47,7 @@ export type ConversationDetail = Conversation & {
   messages: Message[];
 };
 export type Bootstrap = {
-  user: { id: string; name: string; email?: string };
+  user: { id: string; name: string; email?: string; development: boolean };
   connections: Connection[];
   personas: Persona[];
   conversations: Conversation[];

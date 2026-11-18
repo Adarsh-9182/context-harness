@@ -34,8 +34,8 @@ export const sqlAdapter: Adapter = {
         id,
         input.name || "Harness user",
         input.email?.toLowerCase() || null,
-        input.emailVerified,
-        input.image,
+        input.emailVerified ?? null,
+        input.image ?? null,
       ],
     );
     return user(result.rows[0]);
@@ -71,13 +71,15 @@ export const sqlAdapter: Adapter = {
     const result = await (
       await db()
     ).query<UserRow>(
-      "UPDATE users SET name=COALESCE($2,name),email=COALESCE($3,email),email_verified=COALESCE($4,email_verified),image=COALESCE($5,image) WHERE id=$1 RETURNING *",
+      "UPDATE users SET name=COALESCE($2,name),email=COALESCE($3,email),email_verified=CASE WHEN $4::boolean THEN $5::timestamptz ELSE email_verified END,image=CASE WHEN $6::boolean THEN $7::text ELSE image END WHERE id=$1 RETURNING *",
       [
         input.id,
-        input.name,
-        input.email?.toLowerCase(),
-        input.emailVerified,
-        input.image,
+        input.name ?? null,
+        input.email?.toLowerCase() ?? null,
+        input.emailVerified !== undefined,
+        input.emailVerified ?? null,
+        input.image !== undefined,
+        input.image ?? null,
       ],
     );
     if (!result.rows[0]) throw Error("User not found");

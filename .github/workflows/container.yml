@@ -1,0 +1,58 @@
+name: Verify production container
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The database stays on this disposable Docker network, with no host port.
+    container: node:24-bookworm
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: harness
+          POSTGRES_DB: harness_ci
+          POSTGRES_PASSWORD: ci-only-${{ github.run_id }}-${{ github.run_attempt }}
+        options: >-
+          --health-cmd "pg_isready -U harness -d harness_ci"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Verify chat and auth persistence against real Postgres
+        # These credentials exist only for this empty, disposable CI database.
+        # No Redis URL: this job tests SQL persistence, not rate-limit quotas.
+        env:
+          DATABASE_URL: postgresql://harness:ci-only-${{ github.run_id }}-${{ github.run_attempt }}@postgres:5432/harness_ci
+        run: npx vitest run tests/chat.test.ts tests/auth.test.ts
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Generate disposable CI credentials
+        run: node scripts/ci-env.mjs "$RUNNER_TEMP/harness-container-ci.env"
+      - name: Build and start the production stack
+        run: docker compose --env-file "$RUNNER_TEMP/harness-container-ci.env" -f compose.ci.yaml up --build --wait --wait-timeout 180
+      - name: Verify production HTTP boundaries
+        run: node scripts/container-smoke.mjs --env-file "$RUNNER_TEMP/harness-container-ci.env"
+      - name: Redacted, bounded application diagnostics
+        if: failure()
+        run: node scripts/container-smoke.mjs --env-file "$RUNNER_TEMP/harness-container-ci.env" --diagnostics
+      - name: Remove disposable containers and volumes
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/harness-container-ci.env" ]; then
+            docker compose --env-file "$RUNNER_TEMP/harness-container-ci.env" -f compose.ci.yaml down --volumes --remove-orphans
+          fi

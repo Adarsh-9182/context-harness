@@ -344,4 +344,60 @@ describe("server-proxied chat integration", () => {
     );
     expect(invalid.status).toBe(400);
   });
+  it("preserves the complete transcript when an edited replacement cannot fit", async () => {
+    const created = await body(await conversationRoute(req("/api/conversations", {
+      personaId: persona.id, connectionId: openai.id, modelId: mocks.modelName,
+    })));
+    await (await chatRoute(req("/api/chat", { conversationId: created.id, message: "Explain prime numbers." }))).text();
+    const context = { params: Promise.resolve({ id: created.id }) };
+    const before = await body(await detailRoute(req(`/api/conversations/${created.id}`), context));
+    const messageId = before.messages.find((m: any) => m.role === "user").id;
+    const calls = mocks.calls.length;
+    const rejected = await chatRoute(req("/api/chat", {
+      conversationId: created.id, action: "edit", messageId, message: "x".repeat(39_999),
+    }));
+    expect(rejected.status).toBe(400);
+    expect(await rejected.text()).toContain("context_too_large");
+    expect(mocks.calls).toHaveLength(calls);
+    const after = await body(await detailRoute(req(`/api/conversations/${created.id}`), context));
+    expect(after.messages).toEqual(before.messages);
+    const edited = await chatRoute(req("/api/chat", {
+      conversationId: created.id, action: "edit", messageId, message: "Explain square numbers instead.",
+    }));
+    expect(await edited.text()).toContain("event: done");
+    const changed = await body(await detailRoute(req(`/api/conversations/${created.id}`), context));
+    expect(changed.messages.map((m: any) => m.role)).toEqual(["assistant", "user", "assistant"]);
+    expect(changed.messages[1].content).toBe("Explain square numbers instead.");
+  });
+  it("preserves the old answer when regeneration cannot fit the selected model", async () => {
+    const context = { params: Promise.resolve({ id: conversation.id }) };
+    const before = await body(await detailRoute(req(`/api/conversations/${conversation.id}`), context));
+    const connectionId = before.connectionId;
+    const row = (await (await db()).query<{ models: any[] }>("SELECT models FROM provider_connections WHERE id=$1", [connectionId])).rows[0];
+    await (await db()).query("UPDATE provider_connections SET models=$1 WHERE id=$2", [JSON.stringify(row.models.map(m => ({ ...m, contextWindow: 256, maxOutputTokens: 128 }))), connectionId]);
+    try {
+      const calls = mocks.calls.length;
+      const rejected = await chatRoute(req("/api/chat", { conversationId: conversation.id, action: "regenerate" }));
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).toContain("context_too_large");
+      expect(mocks.calls).toHaveLength(calls);
+      const after = await body(await detailRoute(req(`/api/conversations/${conversation.id}`), context));
+      expect(after.messages).toEqual(before.messages);
+    } finally {
+      await (await db()).query("UPDATE provider_connections SET models=$1 WHERE id=$2", [JSON.stringify(row.models), connectionId]);
+    }
+  });
+  it("never returns a complete short credential, including legacy suffix metadata", async () => {
+    for (const secret of ["x", "tiny", "éé"]) {
+      const connection = await body(await connectionRoute(req("/api/connections", { provider: "compatible", apiKey: secret })));
+      expect(connection.last4).toBe("");
+      const row = (await (await db()).query<{ last4: string; encrypted_key: unknown }>("SELECT last4,encrypted_key FROM provider_connections WHERE id=$1", [connection.id])).rows[0];
+      expect(row.last4).toBe("");
+      expect(JSON.stringify(row.encrypted_key)).not.toContain(`\"${secret}\"`);
+      // A row saved by the previous implementation may hold a full short suffix.
+      await (await db()).query("UPDATE provider_connections SET last4=$1 WHERE id=$2", [secret, connection.id]);
+      const loaded = await body(await bootstrapRoute(req("/api/bootstrap")));
+      expect(loaded.connections.find((c: any) => c.id === connection.id).last4).toBe("");
+    }
+  });
 });

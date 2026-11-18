@@ -15,9 +15,10 @@ import {
   personaInputSchema,
   roleColor,
   TEMPLATE_VERSION,
+  fitContext,
 } from "./persona";
 
-export type UserIdentity = { id: string; name: string; email?: string };
+export type UserIdentity = { id: string; name: string; email?: string; development?: boolean };
 export type ConnectionRow = {
   id: string;
   user_id: string;
@@ -130,14 +131,19 @@ export const chatSchema = z
       });
   });
 
-export const publicConnection = (r: ConnectionRow) => ({
-  id: r.id,
-  provider: r.provider,
-  name: r.name,
-  last4: r.last4,
-  models: r.models,
-  baseUrl: r.base_url,
-});
+export async function publicConnection(r: ConnectionRow) {
+  // Derive from the authenticated envelope rather than trusting legacy suffix
+  // metadata. A short local placeholder must never be returned in full.
+  const credential = await decryptKey(r.encrypted_key);
+  return {
+    id: r.id,
+    provider: r.provider,
+    name: r.name,
+    last4: credential.length > 4 ? credential.slice(-4) : "",
+    models: r.models,
+    baseUrl: r.base_url,
+  };
+}
 export const publicPersona = (r: PersonaRow) => ({
   id: r.id,
   role: r.role,
@@ -188,8 +194,8 @@ export async function bootstrap(user: UserIdentity) {
     ),
   ]);
   return {
-    user: { id: user.id, name: user.name },
-    connections: connections.rows.map(publicConnection),
+    user: { id: user.id, name: user.name, development: user.development === true },
+    connections: await Promise.all(connections.rows.map(publicConnection)),
     personas: personas.rows.map(publicPersona),
     conversations: conversations.rows.map(publicConversation),
   };
@@ -245,7 +251,7 @@ export async function saveConnection(
       user.id,
       input.provider,
       input.name || providerName(input.provider),
-      input.apiKey.slice(-4),
+      input.apiKey.length > 4 ? input.apiKey.slice(-4) : "",
       JSON.stringify(envelope),
       input.baseUrl ?? null,
       JSON.stringify(models),
@@ -459,6 +465,11 @@ export async function getMessages(conversationId: string) {
     )
   ).rows;
 }
+function nextMessageTimestamp(conversationParameter: "$1" | "$2") {
+  // Timestamp precision can tie on very fast/mock streams. A strict database
+  // ordering avoids a random UUID tie-break placing a reply before its request.
+  return `GREATEST(clock_timestamp(),COALESCE((SELECT MAX(created_at)+INTERVAL '1 microsecond' FROM messages WHERE conversation_id=${conversationParameter}),'-infinity'::timestamptz))`;
+}
 export async function insertMessage(
   conversationId: string,
   role: "user" | "assistant",
@@ -470,7 +481,7 @@ export async function insertMessage(
   await (
     await db()
   ).query(
-    "INSERT INTO messages (id,conversation_id,role,content,attachments,status) VALUES ($1,$2,$3,$4,$5,$6)",
+    `INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,${nextMessageTimestamp("$2")})`,
     [id, conversationId, role, content, JSON.stringify(attachments), status],
   );
   return id;
@@ -484,6 +495,7 @@ export async function prepareTurn(
   const model = pickModel(connection, conversation.model_id);
   const persona = await getPersona(userId, conversation.persona_id);
   let history = await getMessages(conversation.id);
+  let removedIds: string[] = [];
   if (input.attachments.length && !model.supportsImages)
     throw new AppError(
       400,
@@ -507,14 +519,7 @@ export async function prepareTurn(
         "Choose one of your messages to edit.",
       );
     const index = history.findIndex((m) => m.id === target.id);
-    const ids = history.slice(index).map((m) => m.id);
-    // IDs are server-selected from this owned conversation; parameterize the list.
-    await (
-      await db()
-    ).query(
-      "DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[])",
-      [conversation.id, ids],
-    );
+    removedIds = history.slice(index).map((m) => m.id);
     history = history.slice(0, index);
   } else if (input.action === "regenerate") {
     const lastUserIndex = history.findLastIndex((m) => m.role === "user");
@@ -524,47 +529,27 @@ export async function prepareTurn(
         "invalid_message",
         "Send a message before regenerating a response.",
       );
-    const remove = history.slice(lastUserIndex + 1).map((m) => m.id);
-    if (remove.length)
-      await (
-        await db()
-      ).query(
-        "DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[])",
-        [conversation.id, remove],
-      );
+    removedIds = history.slice(lastUserIndex + 1).map((m) => m.id);
     history = history.slice(0, lastUserIndex + 1);
   }
-  if (input.action !== "regenerate") {
-    const id = await insertMessage(
-      conversation.id,
-      "user",
-      input.message ?? "",
-      input.attachments,
-    );
-    history.push({
-      id,
+  const newUser: MessageRow | undefined = input.action !== "regenerate"
+    ? {
+      id: randomUUID(),
       conversation_id: conversation.id,
       role: "user",
       content: input.message ?? "",
       attachments: input.attachments,
       status: "complete",
       created_at: new Date(),
-    });
-  }
+    }
+    : undefined;
+  if (newUser) history.push(newUser);
   if (history.length > 300)
     throw new AppError(
       400,
       "conversation_limit",
       "This conversation is full. Start a new conversation with the same role.",
     );
-  const firstUser = history.find((m) => m.role === "user");
-  if (firstUser)
-    await (
-      await db()
-    ).query("UPDATE conversations SET title=$1,updated_at=NOW() WHERE id=$2", [
-      firstUser.content.slice(0, 75) || `${persona.role} · Image`,
-      conversation.id,
-    ]);
   const messages: UnifiedMessage[] = history
     .filter((m) => m.status !== "greeting" && m.status !== "failed")
     .map((m) => ({
@@ -575,6 +560,40 @@ export async function prepareTurn(
           : m.content,
       attachments: model.supportsImages ? (m.attachments ?? []) : [],
     }));
+  // Validate the proposed transcript before any destructive edit or append.
+  // A model switch to a smaller context must not erase the old answer when
+  // regeneration or an edited replacement cannot fit.
+  fitContext(
+    persona.compiled_prompt,
+    messages,
+    model.contextWindow,
+    Math.min(model.maxOutputTokens, 4096),
+  );
+  const database = await db();
+  if (newUser && removedIds.length) {
+    // The deletion and replacement insertion are a single SQL statement; an
+    // insertion failure rolls back the removed branch as well.
+    await database.query(
+      `WITH removed AS (DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[]) RETURNING id) INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($3,$1,'user',$4,$5,'complete',${nextMessageTimestamp("$1")})`,
+      [conversation.id, removedIds, newUser.id, newUser.content, JSON.stringify(newUser.attachments)],
+    );
+  } else if (newUser) {
+    await database.query(
+      `INSERT INTO messages (id,conversation_id,role,content,attachments,status,created_at) VALUES ($1,$2,'user',$3,$4,'complete',${nextMessageTimestamp("$2")})`,
+      [newUser.id, conversation.id, newUser.content, JSON.stringify(newUser.attachments)],
+    );
+  } else if (removedIds.length) {
+    await database.query(
+      "DELETE FROM messages WHERE conversation_id=$1 AND id=ANY($2::text[])",
+      [conversation.id, removedIds],
+    );
+  }
+  const firstUser = history.find((m) => m.role === "user");
+  if (firstUser)
+    await database.query("UPDATE conversations SET title=$1,updated_at=NOW() WHERE id=$2", [
+      firstUser.content.slice(0, 75) || `${persona.role} · Image`,
+      conversation.id,
+    ]);
   return {
     conversation,
     connection,

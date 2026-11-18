@@ -270,6 +270,25 @@ function ExpertAvatar({
   );
 }
 
+export function WorkspaceAccess({ development }: { development: boolean }) {
+  if (development)
+    return (
+      <section className="settings-note" aria-label="Local development workspace">
+        <ShieldCheck size={19} />
+        <p>
+          No account is signed in here. This local development workspace stays
+          available when you reopen Harness.
+        </p>
+      </section>
+    );
+  return (
+    <a className="signout-link" href="/api/auth/signout">
+      <LogOut size={14} />
+      Sign out
+    </a>
+  );
+}
+
 export function HarnessApp() {
   const [data, setData] = useState<Bootstrap | null>(null),
     [loading, setLoading] = useState(true),
@@ -920,7 +939,11 @@ export function HarnessApp() {
               </span>
               <span>
                 <strong>{data?.user.name || "Your workspace"}</strong>
-                <small>Personal workspace</small>
+                <small>
+                  {data?.user.development
+                    ? "Local development"
+                    : "Personal workspace"}
+                </small>
               </span>
               <button
                 className="icon-button"
@@ -1552,8 +1575,12 @@ export function HarnessApp() {
       <Dialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        title="Your workspace"
-        description="A few things to make yourself at home."
+        title={data?.user.development ? "Local workspace" : "Your workspace"}
+        description={
+          data?.user.development
+            ? "Your development space, without account sign-in."
+            : "A few things to make yourself at home."
+        }
       >
         <div className="settings-body">
           <div>
@@ -1605,10 +1632,7 @@ export function HarnessApp() {
               New line <kbd>Shift ↵</kbd>
             </span>
           </div>
-          <a className="signout-link" href="/api/auth/signout">
-            <LogOut size={14} />
-            Sign out
-          </a>
+          <WorkspaceAccess development={data?.user.development === true} />
         </div>
       </Dialog>
       <div className="sr-only" aria-live="polite" aria-atomic="true">

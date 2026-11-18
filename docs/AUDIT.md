@@ -28,4 +28,4 @@ The original `dist/`, `server.mjs`, and `.mjs` tests remain available via `npm r
 
 Provider/unit/integration tests use mocked HTTP responses. Browser tests use an explicitly enabled local upstream fixture. These prove tested software behavior, not paid-key credit, provider uptime, or model quality. Real access is checked when the user saves a key.
 
-Docker was unavailable on the development Mac. Container files are supplied, but execution must be verified on a Docker-capable host. No claim is made that a static Cloudflare Sites deployment hosts the new Node/Postgres app.
+Docker was unavailable on the development Mac. A dedicated GitHub workflow now builds the production Docker target with Postgres and Redis and exercises HTTP/auth/static-asset boundaries; a second job verifies chat and authentication SQL against Postgres. See the verification receipt for results. Static Cloudflare Sites hosting cannot run this Node/Postgres app.

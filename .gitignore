@@ -4,6 +4,7 @@ node_modules/
 *.tar.gz
 !dist/downloads/*
 .next/
+.vercel/
 .env
 .env.*
 !.env.example

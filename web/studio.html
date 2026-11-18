@@ -12,15 +12,14 @@
 <body>
   <a class="skip-link" href="#brief-title">Skip to context editor</a>
   <header class="topbar">
-    <nav class="shell topbar-inner" aria-label="Harness">
-      <a class="wordmark" href="/harness"><span class="brand-mark" aria-hidden="true">#</span> Harness</a>
-      <a class="topbar-link" href="/harness#setup">Local app setup <span aria-hidden="true">↗</span></a>
-    </nav>
+    <div class="shell topbar-inner">
+      <span class="wordmark"><span class="brand-mark" aria-hidden="true">#</span> Harness</span>
+    </div>
   </header>
   <main class="shell">
     <header class="workspace-header">
       <h1>Context workspace</h1>
-      <p>Set the goal, sources, and output once. Reuse the brief in ChatGPT or Claude.</p>
+      <p>Write a brief you can reuse in ChatGPT or Claude.</p>
     </header>
 
     <noscript><p class="notice">Enable JavaScript to edit, save, and copy briefs in this workspace.</p></noscript>
@@ -35,25 +34,13 @@
     </section>
 
     <div class="workspace">
-      <section class="panel library" aria-labelledby="saved-title">
-        <div class="panel-heading">
-          <h2 id="saved-title">Saved contexts</h2>
-          <span class="count" id="saved-count" aria-label="Number of saved contexts">0</span>
-        </div>
-        <button id="new-context" class="button library-new" type="button"><span aria-hidden="true">+</span> New context</button>
-        <p id="saved-empty" class="library-empty">Saved briefs will appear here.</p>
-        <div id="saved-contexts" class="saved-list" aria-label="Saved contexts list"></div>
-        <div class="library-footer">
-          <button id="import-context" class="button subtle" type="button">Import a brief</button>
-          <input id="context-file" type="file" accept=".json,application/json" aria-label="Choose a saved Harness brief" hidden>
-          <p>Briefs are saved in this browser.</p>
-        </div>
-      </section>
-
       <section class="panel editor" aria-labelledby="brief-title">
         <div class="panel-heading">
-          <h2 id="brief-title" tabindex="-1">Your brief</h2>
-          <span id="draft-status" class="draft-status">New context</span>
+          <div class="editor-title">
+            <h2 id="brief-title" tabindex="-1">Your brief</h2>
+            <span id="draft-status" class="draft-status">New context</span>
+          </div>
+          <button id="new-context" class="button compact" type="button"><span aria-hidden="true">+</span> New context</button>
         </div>
 
         <form id="context-form" class="brief-form" method="post">
@@ -66,28 +53,35 @@
             <textarea id="context-goal" name="goal" required minlength="4" maxlength="2000" rows="3" placeholder="What should the model help you accomplish?"></textarea>
           </div>
           <div class="field">
-            <label for="context-instructions">Instructions <span class="optional" aria-hidden="true">Optional</span></label>
-            <textarea id="context-instructions" name="instructions" maxlength="3000" rows="3" placeholder="How should it approach the work?"></textarea>
+            <label for="role-search">Role <span class="optional" aria-hidden="true">Optional</span></label>
             <div class="role-tools">
-              <label class="visually-hidden" for="role-search">Find a role for your brief</label>
-              <input id="role-search" type="text" list="profession-options" maxlength="100" autocomplete="off" placeholder="Find a role">
+              <input id="role-search" type="text" list="profession-options" maxlength="100" autocomplete="off" aria-label="Find a role for your brief" placeholder="Search __PROFESSION_COUNT__ professions">
               <datalist id="profession-options"></datalist>
               <button id="apply-role" class="button compact" type="button">Add role</button>
             </div>
           </div>
-          <div class="field">
-            <div class="field-heading">
-              <label for="context-references">Reference material <span class="optional" aria-hidden="true">Optional</span></label>
-              <button id="import-references" class="button compact" type="button" aria-describedby="reference-help">Add text files</button>
-              <input id="reference-files" type="file" accept=".txt,.md,.csv,.json" aria-label="Choose reference files" multiple hidden>
+          <details class="disclosure">
+            <summary>More context</summary>
+            <div class="extra-fields">
+              <div class="field">
+                <label for="context-instructions">Instructions</label>
+                <textarea id="context-instructions" name="instructions" maxlength="3000" rows="3" placeholder="How should it approach the work?"></textarea>
+              </div>
+              <div class="field">
+                <div class="field-heading">
+                  <label for="context-references">Reference material</label>
+                  <button id="import-references" class="button compact" type="button" aria-describedby="reference-help">Add text files</button>
+                  <input id="reference-files" type="file" accept=".txt,.md,.csv,.json" aria-label="Choose reference files" multiple hidden>
+                </div>
+                <textarea id="context-references" name="references" maxlength="12000" rows="3" aria-describedby="reference-help" placeholder="Paste notes, excerpts, or example inputs."></textarea>
+                <p id="reference-help" class="field-help">TXT, Markdown, CSV, or JSON. Up to 12,000 characters in total.</p>
+              </div>
+              <div class="field">
+                <label for="context-output">Output format</label>
+                <textarea id="context-output" name="outputFormat" maxlength="2000" rows="2" placeholder="e.g. A summary, evidence table, and open questions"></textarea>
+              </div>
             </div>
-            <textarea id="context-references" name="references" maxlength="12000" rows="4" aria-describedby="reference-help" placeholder="Paste notes, excerpts, or example inputs."></textarea>
-            <p id="reference-help" class="field-help">TXT, Markdown, CSV, or JSON. Up to 12,000 characters in total.</p>
-          </div>
-          <div class="field">
-            <label for="context-output">Output format <span class="optional" aria-hidden="true">Optional</span></label>
-            <textarea id="context-output" name="outputFormat" maxlength="2000" rows="3" placeholder="e.g. A summary, evidence table, and open questions"></textarea>
-          </div>
+          </details>
           <div class="editor-footer">
             <button id="delete-context" class="button danger subtle" type="button" disabled>Delete</button>
             <div class="actions">
@@ -96,6 +90,17 @@
             </div>
           </div>
         </form>
+
+        <details class="disclosure library">
+          <summary><span id="saved-title">Saved contexts</span> <span class="count" id="saved-count" aria-label="Number of saved contexts">0</span></summary>
+          <p id="saved-empty" class="library-empty">Saved briefs will appear here.</p>
+          <div id="saved-contexts" class="saved-list" aria-label="Saved contexts list"></div>
+          <div class="library-footer">
+            <button id="import-context" class="button subtle" type="button">Import a brief</button>
+            <input id="context-file" type="file" accept=".json,application/json" aria-label="Choose a saved Harness brief" hidden>
+            <p>Briefs are saved in this browser.</p>
+          </div>
+        </details>
       </section>
 
       <section class="panel preview" aria-labelledby="preview-title">

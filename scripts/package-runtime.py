@@ -6,7 +6,7 @@ root = Path(__file__).resolve().parents[1]
 target = root / 'dist' / 'downloads' / 'harness-studio.zip'
 target.parent.mkdir(parents=True, exist_ok=True)
 files = ['package.json', 'package-lock.json', 'README.md', '.gitignore', '.env.example',
-         'AGENTS.md', 'server.mjs', 'next.config.ts', 'tsconfig.json',
+         'AGENTS.md', 'server.mjs', 'next.config.ts', 'tsconfig.json', 'vercel.json',
          'postcss.config.mjs', 'vitest.config.ts', 'playwright.config.ts',
          'Dockerfile', 'compose.yaml', 'compose.ci.yaml', '.dockerignore']
 for directory in ['src', 'docs', 'tests', 'scripts', 'web', 'public', '.github', 'dist']:

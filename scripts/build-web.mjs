@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 import { PROFESSION_GROUPS } from "../src/lib/professions.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const output = process.argv[2] ? resolve(process.argv[2]) : join(root, ".local", "web-release");
+const output = process.argv[2] ? resolve(process.argv[2]) : join(root, ".local", "web-app");
 const assets = join(output, "assets");
-await Promise.all([mkdir(assets, { recursive: true }), mkdir(join(output, "harness"), { recursive: true })]);
+await mkdir(assets, { recursive: true });
 
 async function asset(label, extension, source) {
   const hash = createHash("sha256").update(source).digest("hex").slice(0, 12);
@@ -32,8 +32,8 @@ const scriptFile = await asset("studio", "mjs", client
   .replaceAll("./context-core.mjs", `./${coreFile}`)
   .replaceAll("./professions.mjs", `./${rolesFile}`));
 
-const html = template.replaceAll("__STUDIO_CSS__", `/assets/${cssFile}`)
-  .replaceAll("__STUDIO_JS__", `/assets/${scriptFile}`)
+const html = template.replaceAll("__STUDIO_CSS__", `./assets/${cssFile}`)
+  .replaceAll("__STUDIO_JS__", `./assets/${scriptFile}`)
   .replaceAll("__PROFESSION_COUNT__", String(professions.length));
-await writeFile(join(output, "harness", "app.html"), html);
-console.log(JSON.stringify({ output, files: ["harness/app.html", ...[cssFile, scriptFile, coreFile, rolesFile].map((name) => `assets/${name}`)] }, null, 2));
+await writeFile(join(output, "index.html"), html);
+console.log(JSON.stringify({ output, files: ["index.html", ...[cssFile, scriptFile, coreFile, rolesFile].map((name) => `assets/${name}`)] }, null, 2));

@@ -4,7 +4,7 @@
 
 Harness is a local AI chat app. Connect your **ChatGPT** or **Claude** account and choose from 500 searchable professions or type your own role. Before you start a chat, answer optional questions about your goal, relevant details, and expected output. Harness keeps those answers with the conversation when you switch models.
 
-Use the [web workspace](https://adarshbhardwaj.space/harness/app) to build and save context in your browser. Copy the prompt to ChatGPT or Claude, or export the brief for **Import brief** in local Harness. See the [web workspace guide](docs/WEB-WORKSPACE.md).
+Use the standalone browser workspace to build and save context. Copy the prompt to ChatGPT or Claude, or export the brief for **Import brief** in local Harness. See the [web workspace guide](docs/WEB-WORKSPACE.md).
 
 ## Build reusable context
 

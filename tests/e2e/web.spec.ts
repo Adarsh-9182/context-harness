@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
+import vercel from "../../vercel.json" with { type: "json" };
 
 const run = promisify(execFile);
 const contentTypes: Record<string, string> = {
@@ -23,14 +24,15 @@ test.beforeAll(async () => {
   const assets = new Set(files);
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    const file = pathname === "/harness/app" ? "harness/app.html" : pathname.slice(1);
+    const file = pathname === "/" ? "index.html" : pathname.slice(1);
     if (request.method !== "GET" || !assets.has(file)) {
       response.writeHead(404).end();
       return;
     }
     try {
       const content = await readFile(join(directory, file));
-      response.writeHead(200, { "Content-Type": contentTypes[extname(file)], "X-Content-Type-Options": "nosniff" }).end(content);
+      const headers = Object.fromEntries(vercel.headers[0].headers.map(({ key, value }) => [key, value]));
+      response.writeHead(200, { ...headers, "Content-Type": contentTypes[extname(file)] }).end(content);
     } catch {
       response.writeHead(500).end();
     }
@@ -58,7 +60,7 @@ test("the generated web workspace edits, saves, and transfers a brief without se
       sent.push(request.url());
     }
   });
-  await page.goto(`${origin}/harness/app`);
+  await page.goto(origin);
   await expect(page.locator("#profession-options option")).toHaveCount(500);
   await page.getByRole("button", { name: "Save context" }).click();
   await expect(page.getByRole("alert")).toContainText("single-line name");
@@ -71,6 +73,7 @@ test("the generated web workspace edits, saves, and transfers a brief without se
   const saved = page.locator("#saved-contexts");
   await name.fill("Private <em>brief</em>");
   await goal.fill("Explain how to check the calculations.");
+  await page.locator("summary").filter({ hasText: "More context" }).click();
   await page.getByLabel("Find a role for your brief").fill("mathematician");
   await page.getByRole("button", { name: "Add role" }).click();
   await expect(instructions).toHaveValue("Role: Mathematician");
@@ -81,6 +84,8 @@ test("the generated web workspace edits, saves, and transfers a brief without se
   await expect(references).toHaveValue("Source: numbers.txt\n42 is the answer.");
   await page.getByRole("textbox", { name: "Output format", exact: true }).fill("A short numbered list");
   await page.getByRole("button", { name: "Save context" }).click();
+  const savedContexts = page.locator("summary").filter({ hasText: "Saved contexts" });
+  await savedContexts.click();
   await expect(saved.getByRole("button")).toHaveCount(1);
   await expect(saved).toContainText("Private <em>brief</em>");
   await expect(saved.locator("em")).toHaveCount(0);
@@ -110,6 +115,7 @@ test("the generated web workspace edits, saves, and transfers a brief without se
   await page.locator("#context-file").setInputFiles(path);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.locator("#studio-status")).toContainText("imported as a new draft");
+  await savedContexts.click();
   await expect(saved.getByRole("button")).toHaveCount(1);
   await expect(goal).toHaveValue("Explain my unsaved second revision.");
   await page.getByRole("button", { name: "Save context" }).click();
@@ -128,8 +134,11 @@ test("the generated web workspace edits, saves, and transfers a brief without se
 
 test("the browser workspace stays usable at mobile width", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
-  await page.goto(`${origin}/harness/app`);
+  await page.goto(origin);
   await expect(page.getByRole("heading", { name: "Context workspace" })).toBeVisible();
+  await expect(page.getByLabel("Goal", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Instructions", exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Import a brief" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Save context" })).toBeEnabled();
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
   expect(fits).toBe(true);

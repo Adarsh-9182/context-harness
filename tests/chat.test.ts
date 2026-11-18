@@ -100,6 +100,15 @@ import { db, resetDbForTests } from "../src/lib/server/db";
 import { resetRateLimitsForTests } from "../src/lib/server/rate-limit";
 import { saveAccountConnection } from "../src/lib/server/account-connections";
 import { chatSchema, commitTurn, insertMessage, prepareTurn } from "../src/lib/server/service";
+import type { Attachment, UnifiedMessage } from "../src/lib/providers/types";
+
+const videoSample: Attachment = {
+  type: "image",
+  mimeType: "image/jpeg",
+  data: "/9j/2Q==",
+  name: "original-clip.mp4",
+  video: { durationSeconds: 18.75, timestampsSeconds: [0, 8.5, 17] },
+};
 
 function req(
   path: string,
@@ -164,7 +173,11 @@ async function seededTranscript() {
 describe("server-proxied chat integration", () => {
   it("uses two signed-in accounts and encrypts credentials without returning them", async () => {
     const standard = { id: mocks.modelName, name: "Test chat model", contextWindow: 16000, maxOutputTokens: 4000, supportsImages: true, supportsTools: false };
-    const models = [standard, { ...standard, id: "small-context-model", contextWindow: 4096, maxOutputTokens: 1024 }];
+    const models = [
+      standard,
+      { ...standard, id: "small-context-model", contextWindow: 4096, maxOutputTokens: 1024 },
+      { ...standard, id: "text-only-model", supportsImages: false },
+    ];
     openai = await saveAccountConnection("test-alice", {
       kind: "chatgpt", clientId: "fixture-client", subject: "fixture-user", accessToken: "example-account-access", refreshToken: "example-renewable-secret", idToken: "example-id-token", expiresAt: Date.now() + 3600000, scopes: ["resource.invoke", "chatgpt.tokens.use.direct"],
     }, models);
@@ -202,6 +215,65 @@ describe("server-proxied chat integration", () => {
     );
     expect(again.id).toBe(persona.id);
     expect(mocks.calls).toHaveLength(count);
+  });
+  it("rejects raw video and validates the sampled JPEG timestamps", () => {
+    const parse = (attachment: unknown) => chatSchema.safeParse({
+      conversationId: "eb52376d-d701-47ba-b4b5-6687cad8f748",
+      attachments: [attachment],
+    });
+    expect(parse(videoSample).success).toBe(true);
+    expect(parse({ ...videoSample, video: { durationSeconds: 86_400, timestampsSeconds: [0, 1, 2, 86_400] } }).success).toBe(true);
+    const invalid = [
+      { ...videoSample, mimeType: "video/mp4" },
+      { ...videoSample, mimeType: "image/png" },
+      { ...videoSample, data: "AAAAGGZ0eXBtcDQy" },
+      ...[0, -1, Infinity, 86_401].map((durationSeconds) => ({ ...videoSample, video: { ...videoSample.video, durationSeconds } })),
+      ...[[], [0, 1, 2, 3, 4], [-1], [2, 1], [1, 1], [18.76], [Infinity]].map((timestampsSeconds) => ({
+        ...videoSample, video: { ...videoSample.video, timestampsSeconds },
+      })),
+    ];
+    for (const attachment of invalid) expect(parse(attachment).success).toBe(false);
+  });
+  it("retains sampled visual evidence through send, edit, regeneration, and a text-only model switch", async () => {
+    const created = await body(await conversationRoute(req("/api/conversations", {
+      personaId: persona.id, connectionId: openai.id, modelId: mocks.modelName,
+    })));
+    const conversationId = created.id;
+    const path = `/api/conversations/${conversationId}`;
+    const context = { params: Promise.resolve({ id: conversationId }) };
+    const read = () => detailRoute(req(path), context).then(body);
+    const send = async (fields: Record<string, unknown>) => {
+      expect(await (await chatRoute(req("/api/chat", { conversationId, ...fields }))).text()).toContain("event: done");
+      return (mocks.calls.at(-1)?.messages as UnifiedMessage[]).findLast((message) => message.role === "user")!;
+    };
+    const attachments = [
+      { type: "image", mimeType: "image/png", data: "AQID", name: "plain-image.png" },
+      videoSample,
+    ];
+    const original = "What do you see in the sample?";
+    const firstCall = await send({ message: original, attachments });
+    expect(firstCall.content).toContain("Attachment 2 is a sampled video contact sheet.");
+    expect(firstCall.content).toContain("Sampled times in reading order: 0s, 8.5s, 17s.");
+    expect(firstCall.content).toContain("No audio is available.");
+    expect(firstCall.content).not.toContain(videoSample.name);
+    expect(firstCall.attachments).toEqual(attachments);
+
+    const stored = (await read()).messages.find((message: { role: string }) => message.role === "user");
+    expect(stored).toMatchObject({ content: original, attachments });
+    const edited = await send({ action: "edit", messageId: stored.id, message: "Review the edit.", attachments });
+    expect(edited.content).toContain("Review the edit.");
+    expect(edited.content).toContain("Attachment 2 is a sampled video contact sheet.");
+    expect(await send({ action: "regenerate" })).toEqual(edited);
+
+    await body(await switchRoute(req(path, { connectionId: openai.id, modelId: "text-only-model" }, "alice", "PATCH"), context));
+    const response = await chatRoute(req("/api/chat", { conversationId, attachments: [videoSample] }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "images_unsupported" } });
+    expect((await send({ message: "What remains available?" })).content).toBe("What remains available?");
+    const history = (mocks.calls.at(-1)?.messages as UnifiedMessage[])[0];
+    expect(history.attachments).toEqual([]);
+    expect(history.content).toContain("Its frames are unavailable to the selected text-only model.");
+    expect(history.content).toContain("An image from this earlier turn is unavailable to the selected text-only model.");
   });
   it("pins pre-chat answers to the selected role and keeps them through a model switch", async () => {
     const reference = "The course materials use a number line and mark every multiple of seven.";

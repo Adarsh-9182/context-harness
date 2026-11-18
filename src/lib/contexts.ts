@@ -1,10 +1,4 @@
-export const CONTEXT_LIMITS = {
-  name: 100,
-  goal: 2_000,
-  instructions: 3_000,
-  references: 12_000,
-  outputFormat: 2_000,
-} as const;
+export { CONTEXT_LIMITS } from "./context-portable.mjs";
 
 export type ContextInput = {
   name: string;

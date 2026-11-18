@@ -16,6 +16,7 @@ export interface Attachment {
   mimeType: string;
   data: string;
   name: string;
+  video?: { durationSeconds: number; timestampsSeconds: number[] };
 }
 export interface UnifiedMessage {
   role: "user" | "assistant";

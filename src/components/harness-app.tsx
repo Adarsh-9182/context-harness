@@ -68,6 +68,7 @@ import { useUI } from "@/lib/store";
 import { chatFrames, ChatResponseError, type CommittedTurn } from "@/lib/chat-stream";
 import { PROFESSION_COUNT } from "@/lib/professions";
 import type { ProfessionBrief } from "@/lib/profession-brief";
+import { isVideoAttachment, sampleVideoAttachment, VIDEO_ACCEPT } from "@/lib/video-attachment";
 import type {
   Bootstrap,
   Connection,
@@ -324,12 +325,15 @@ export function HarnessApp() {
     } | null>(null),
     [attachments, setAttachments] = useState<Attachment[]>([]),
     [documents, setDocuments] = useState<{ name: string; text: string }[]>([]),
+    [fileProgress, setFileProgress] = useState(""),
+    [fileError, setFileError] = useState(""),
     [editId, setEditId] = useState<string | null>(null),
     [editText, setEditText] = useState("");
   const controller = useRef<AbortController | null>(null),
     bottom = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     upload = useRef<HTMLInputElement>(null),
+    videoUpload = useRef<HTMLInputElement>(null),
     roleInput = useRef<HTMLInputElement>(null),
     professionTrigger = useRef<HTMLElement | null>(null),
     composerRef = useRef<HTMLDivElement>(null),
@@ -346,7 +350,7 @@ export function HarnessApp() {
       view: "home",
     }),
     uploadEpoch = useRef(0),
-    uploadPending = useRef(false),
+    uploadPending = useRef<AbortController | null>(null),
     viewEpoch = useRef(0),
     turnEpoch = useRef(0),
     archivesEpoch = useRef(0);
@@ -354,10 +358,13 @@ export function HarnessApp() {
   const previousScrollTop = useRef(0);
   contextRef.current = { chatId: chat?.id || "", connectionId, modelId, view };
   const currentIssue = view === "chat" && turnIssue?.conversationId === chat?.id ? turnIssue : null;
+  const attachmentControlsDisabled = busy || switching || compiling || !!fileProgress ||
+    currentIssue?.recovery === "check";
   const selected = data?.connections.find((c) => c.id === connectionId),
     model = selected?.models.find((m) => m.id === modelId);
   const professionConnection = model ? selected : data?.connections.find((connection) => connection.models.length);
   const professionModel = model || professionConnection?.models[0];
+  useEffect(() => () => uploadPending.current?.abort(), []);
   const refresh = useCallback(async (canApply: () => boolean = () => true) => {
     const result = await api<Bootstrap>("/api/bootstrap");
     if (!canApply()) return result;
@@ -480,9 +487,14 @@ export function HarnessApp() {
   }
   function clearFiles() {
     uploadEpoch.current++;
+    uploadPending.current?.abort();
+    uploadPending.current = null;
+    setFileProgress("");
+    setFileError("");
     setAttachments([]);
     setDocuments([]);
     if (upload.current) upload.current.value = "";
+    if (videoUpload.current) videoUpload.current.value = "";
   }
   function navigationBlocked() {
     if (busy) {
@@ -710,7 +722,7 @@ export function HarnessApp() {
       return;
     if (turnAttachments.length && !model?.supportsImages) {
       toast.error(
-        "Choose an image-capable model before resending this image message.",
+        "Choose a model with image support to send these attachments.",
       );
       return;
     }
@@ -917,8 +929,10 @@ export function HarnessApp() {
       setCheckingTurn(false);
     }
   }
-  async function addFiles(files: FileList | null) {
-    if (!files || !files.length) return;
+  async function addFiles(picker: HTMLInputElement) {
+    const files = Array.from(picker.files ?? []);
+    picker.value = "";
+    if (!files.length) return;
     if (uploadPending.current) {
       toast("Wait for the current files to finish loading.");
       return;
@@ -927,29 +941,44 @@ export function HarnessApp() {
       identity: composerIdentity(contextRef.current),
       epoch: uploadEpoch.current,
     };
-    uploadPending.current = true;
+    const canApply = () => canApplyUpload(start, {
+      identity: composerIdentity(contextRef.current),
+      epoch: uploadEpoch.current,
+    });
+    const pending = new AbortController();
+    uploadPending.current = pending;
+    setFileError("");
+    setFileProgress(files.some(isVideoAttachment) ? "Reading video…" : "Reading files…");
     try {
       let imageBytes = attachments.reduce(
-        (n, a) => n + (a.data.length * 3) / 4,
+        (n, a) => n + Math.floor((a.data.length * 3) / 4),
         0,
       );
       const nextImages = [...attachments],
         nextDocs = [...documents];
-      for (const file of Array.from(files)) {
-        if (file.type.startsWith("image/")) {
+      for (const file of files) {
+        if (!canApply()) return;
+        const video = isVideoAttachment(file);
+        if (video || file.type.startsWith("image/")) {
           if (!model?.supportsImages)
-            throw Error(
-              "Choose a model that supports images before adding one.",
-            );
+            throw Error("Choose a model with image support to attach images or video frames.");
+          const sizeError = "Attach up to 3 images or clip previews, below 2 MB combined.";
+          if (nextImages.length >= 3) throw Error(sizeError);
+          if (video) {
+            const sample = await sampleVideoAttachment(file, pending.signal);
+            imageBytes += Math.floor((sample.data.length * 3) / 4);
+            if (imageBytes > 2_000_000) throw Error(sizeError);
+            nextImages.push(sample);
+            continue;
+          }
           if (
             !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
               file.type,
             )
           )
             throw Error("Use PNG, JPEG, WebP, or GIF.");
-          imageBytes += file.size;
-          if (imageBytes > 2_000_000 || nextImages.length >= 3)
-            throw Error("Attach up to 3 images, below 2 MB combined.");
+          imageBytes += Math.ceil(file.size / 3) * 3;
+          if (imageBytes > 2_000_000) throw Error(sizeError);
           const data = await new Promise<string>((resolve, reject) => {
             const r = new FileReader();
             r.onload = () => resolve(String(r.result).split(",")[1]);
@@ -973,24 +1002,16 @@ export function HarnessApp() {
           nextDocs.push({ name: file.name, text: await file.text() });
         }
       }
-      if (
-        !canApplyUpload(start, {
-          identity: composerIdentity(contextRef.current),
-          epoch: uploadEpoch.current,
-        })
-      ) {
-        toast(
-          "Files were not added because your conversation or model changed.",
-        );
-        return;
-      }
+      if (!canApply()) return;
       setAttachments(nextImages);
       setDocuments(nextDocs);
     } catch (e) {
-      toast.error((e as Error).message);
+      if (!pending.signal.aborted && canApply()) setFileError((e as Error).message);
     } finally {
-      uploadPending.current = false;
-      if (upload.current) upload.current.value = "";
+      if (uploadPending.current === pending) {
+        uploadPending.current = null;
+        setFileProgress("");
+      }
     }
   }
   async function removeConversation(c: Conversation) {
@@ -1598,13 +1619,18 @@ export function HarnessApp() {
                         <>
                           {m.attachments?.length ? (
                             <div className="message-images">
-                              {m.attachments.map((a, i) => (
-                                <img
-                                  key={i}
-                                  src={`data:${a.mimeType};base64,${a.data}`}
-                                  alt={a.name}
-                                />
-                              ))}
+                              {m.attachments.map((a, i) => {
+                                const image = (
+                                  <img key={i} src={`data:${a.mimeType};base64,${a.data}`}
+                                    alt={a.video ? `Sampled frames from ${a.name}` : a.name} />
+                                );
+                                return a.video ? (
+                                  <figure className="message-clip" key={i}>
+                                    {image}
+                                    <figcaption>{a.name} · {a.video.timestampsSeconds.length} sampled frames</figcaption>
+                                  </figure>
+                                ) : image;
+                              })}
                             </div>
                           ) : null}
                           {m.content ? (
@@ -1616,13 +1642,13 @@ export function HarnessApp() {
                               <span />
                               <span className="sr-only">Thinking</span>
                             </span>
-                          ) : (
+                          ) : m.role === "assistant" ? (
                             <p className="message-state">
                               {m.status === "cancelled"
                                 ? "Response stopped."
                                 : "No complete response was received. You can regenerate it."}
                             </p>
-                          )}
+                          ) : null}
                           <div className="message-actions">
                             <button
                               onClick={async () => {
@@ -1694,10 +1720,13 @@ export function HarnessApp() {
                   <div className="attachment-list">
                     {attachments.map((a, i) => (
                       <span key={i}>
-                        <ImageIcon size={14} />
-                        {a.name}
+                        {a.video ? <Clapperboard size={14} /> : <ImageIcon size={14} />}
+                        <span className="attachment-name" title={a.name}>{a.name}</span>
+                        {a.video && <small>{a.video.timestampsSeconds.length} sampled frames</small>}
                         <button
+                          type="button"
                           aria-label={`Remove ${a.name}`}
+                          disabled={attachmentControlsDisabled}
                           onClick={() =>
                             setAttachments(
                               attachments.filter((_, j) => i !== j),
@@ -1711,9 +1740,11 @@ export function HarnessApp() {
                     {documents.map((d, i) => (
                       <span key={i}>
                         <BookOpen size={14} />
-                        {d.name}
+                        <span className="attachment-name" title={d.name}>{d.name}</span>
                         <button
+                          type="button"
                           aria-label={`Remove ${d.name}`}
+                          disabled={attachmentControlsDisabled}
                           onClick={() =>
                             setDocuments(documents.filter((_, j) => i !== j))
                           }
@@ -1723,6 +1754,8 @@ export function HarnessApp() {
                       </span>
                     ))}
                   </div>
+                  {fileProgress && <p className="attachment-feedback" role="status"><LoaderCircle className="spin" size={14} aria-hidden="true" />{fileProgress}</p>}
+                  {fileError && <p className="attachment-feedback attachment-feedback-error" role="alert"><AlertCircle size={14} aria-hidden="true" />{fileError}</p>}
                   <TextareaAutosize
                     ref={input}
                     minRows={1}
@@ -1746,18 +1779,21 @@ export function HarnessApp() {
                   <div className="composer-controls">
                     <div>
                       <button
+                        type="button"
                         className="icon-button"
                         onClick={() => upload.current?.click()}
-                        aria-label="Attach image or text file"
-                        disabled={busy || switching || compiling || currentIssue?.recovery === "check"}
+                        aria-label={model?.supportsImages ? "Attach files" : "Attach text reference"}
+                        title={model?.supportsImages ? "Attach images, clips or text references" : "Attach text reference"}
+                        disabled={attachmentControlsDisabled}
                       >
                         <Paperclip size={18} />
                       </button>
-                      <span>
-                        {model?.supportsImages
-                          ? "Images & text"
-                          : "Text references"}
-                      </span>
+                      {model?.supportsImages ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => videoUpload.current?.click()}
+                          disabled={attachmentControlsDisabled} title="Attach sampled video frames for visual review">
+                          <Clapperboard size={16} aria-hidden="true" /> Attach video
+                        </Button>
+                      ) : <span>Text references</span>}
                     </div>
                     {busy ? (
                       <Button
@@ -1772,7 +1808,7 @@ export function HarnessApp() {
                         size="icon"
                         onClick={() => streamChat()}
                         disabled={
-                          currentIssue?.recovery === "check" || (!draft.trim() &&
+                          attachmentControlsDisabled || (!draft.trim() &&
                           !attachments.length &&
                           !documents.length)
                         }
@@ -1801,11 +1837,13 @@ export function HarnessApp() {
                   multiple
                   accept={
                     model?.supportsImages
-                      ? "image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json"
+                      ? `image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,${VIDEO_ACCEPT}`
                       : ".txt,.md,.csv,.json"
                   }
-                  onChange={(e) => addFiles(e.target.files)}
+                  onChange={(e) => void addFiles(e.currentTarget)}
                 />
+                {model?.supportsImages && <input hidden ref={videoUpload} aria-label="Video attachment"
+                  type="file" accept={VIDEO_ACCEPT} onChange={(e) => void addFiles(e.currentTarget)} />}
               </div>
             </div>
           )}

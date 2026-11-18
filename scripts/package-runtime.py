@@ -9,7 +9,7 @@ files = ['package.json', 'package-lock.json', 'README.md', '.gitignore', '.env.e
          'AGENTS.md', 'server.mjs', 'next.config.ts', 'tsconfig.json',
          'postcss.config.mjs', 'vitest.config.ts', 'playwright.config.ts',
          'Dockerfile', 'compose.yaml', 'compose.ci.yaml', '.dockerignore']
-for directory in ['src', 'docs', 'tests', 'scripts', 'public', '.github', 'dist']:
+for directory in ['src', 'docs', 'tests', 'scripts', 'web', 'public', '.github', 'dist']:
     for path in sorted((root / directory).rglob('*')):
         if path.is_file() and 'downloads' not in path.parts:
             files.append(str(path.relative_to(root)))

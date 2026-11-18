@@ -1189,6 +1189,16 @@ html[data-theme="dark"] .management-error {
   border-radius: 9px;
   border: 1px solid var(--border);
 }
+.message-clip {
+  margin: 0;
+  min-width: 0;
+}
+.message-clip figcaption {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
 .attachment-list {
   display: flex;
   gap: 7px;
@@ -1207,11 +1217,41 @@ html[data-theme="dark"] .management-error {
   border: 1px solid var(--border);
   margin-bottom: 10px;
   color: var(--muted);
+  max-width: 100%;
+  min-width: 0;
+}
+.attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-list svg,
+.attachment-list small,
+.attachment-list button,
+.attachment-feedback svg {
+  flex-shrink: 0;
+}
+.attachment-list small {
+  font-size: inherit;
+  color: var(--subtle);
 }
 .attachment-list button {
   display: flex;
   padding: 0;
   color: var(--muted);
+}
+.attachment-feedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--muted);
+  margin: 0 0 9px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.attachment-feedback-error {
+  color: var(--text);
 }
 .edit-message {
   border: 1px solid var(--border);

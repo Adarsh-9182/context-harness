@@ -1,3 +1,7 @@
+import type { Attachment } from "./providers/types";
+
+export type { Attachment } from "./providers/types";
+
 export type Model = {
   id: string;
   name: string;
@@ -28,12 +32,6 @@ export type Conversation = {
   connectionId: string;
   modelId: string;
   updatedAt: string;
-};
-export type Attachment = {
-  type: "image";
-  mimeType: string;
-  data: string;
-  name: string;
 };
 export type Message = {
   id: string;

@@ -97,6 +97,21 @@ export const renameConversationSchema = z
 export const conversationPatchSchema = z.union([switchSchema, renameConversationSchema]);
 export const restoreConversationSchema = z.object({}).strict();
 export const conversationListSchema = z.enum(["true", "false"]).optional();
+const videoSampleSchema = z
+  .object({
+    durationSeconds: z.number().positive().max(86_400),
+    timestampsSeconds: z.array(z.number().nonnegative()).min(1).max(4),
+  })
+  .strict()
+  .refine(
+    ({ durationSeconds, timestampsSeconds }) => timestampsSeconds.every((time, index) =>
+      time <= durationSeconds && (index === 0 || time > timestampsSeconds[index - 1]),
+    ),
+    {
+      path: ["timestampsSeconds"],
+      message: "Sample timestamps must be in increasing order and within the video duration.",
+    },
+  );
 const attachmentSchema = z
   .object({
     type: z.literal("image"),
@@ -107,8 +122,13 @@ const attachmentSchema = z
       .max(2_800_000)
       .regex(/^[A-Za-z0-9+/]*={0,2}$/),
     name: z.string().min(1).max(200),
+    video: videoSampleSchema.optional(),
   })
-  .strict();
+  .strict()
+  // /9j/ is the Base64 encoding of the three JPEG signature bytes.
+  .refine((attachment) => !attachment.video || (
+    attachment.mimeType === "image/jpeg" && attachment.data.startsWith("/9j/")
+  ), { path: ["video"], message: "Video samples must be a JPEG contact sheet." });
 export const chatSchema = z
   .object({
     conversationId: z.string().uuid(),
@@ -592,6 +612,31 @@ async function acceptMessage(userId: string, message: MessageRow, title: string)
   return publicMessageMetadata({ ...message, created_at: row.created_at });
 }
 
+function messageForModel(message: MessageRow, supportsImages: boolean): UnifiedMessage {
+  const attachments = message.attachments ?? [];
+  const notes = attachments.flatMap(({ video }, index) => {
+    if (!video) return [];
+    const label = `Attachment ${index + 1} is a sampled video contact sheet.`;
+    if (!supportsImages)
+      return [`[${label} Its frames are unavailable to the selected text-only model. No audio is available.]`];
+    // Ordinals follow the image order sent to the provider. File names are
+    // kept in the transcript and omitted from the model-facing description.
+    const timestamps = video.timestampsSeconds.map((time) => `${time}s`).join(", ");
+    return [
+      `[${label} Reported video duration: ${video.durationSeconds}s. Sampled times in reading order: ${timestamps}.` +
+      " Use only the visible frames as evidence. No audio is available." +
+      " State when an observation requires footage between the sampled times or the soundtrack.]",
+    ];
+  });
+  if (!supportsImages && attachments.some((item) => !item.video))
+    notes.push("[An image from this earlier turn is unavailable to the selected text-only model.]");
+  return {
+    role: message.role,
+    content: notes.length ? [message.content, ...notes].join("\n") : message.content,
+    attachments: supportsImages ? attachments : [],
+  };
+}
+
 export async function prepareTurn(
   userId: string,
   input: z.infer<typeof chatSchema>,
@@ -660,14 +705,7 @@ export async function prepareTurn(
     );
   const messages: UnifiedMessage[] = history
     .filter((m) => m.status !== "greeting" && m.status !== "failed" && m.status !== "cancelled")
-    .map((m) => ({
-      role: m.role,
-      content:
-        !model.supportsImages && m.attachments?.length
-          ? `${m.content}\n[An image from this earlier turn is unavailable to the selected text-only model.]`
-          : m.content,
-      attachments: model.supportsImages ? (m.attachments ?? []) : [],
-    }));
+    .map((m) => messageForModel(m, model.supportsImages));
   // Validate the proposed transcript before any destructive edit or append.
   // A model switch to a smaller context must not erase the old answer when
   // regeneration or an edited replacement cannot fit.

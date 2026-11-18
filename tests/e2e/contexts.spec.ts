@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import type { ConversationDetail } from "../../src/lib/client-types";
+import { readPortableContext } from "../../src/lib/context-portable.mjs";
 import type { ContextBrief } from "../../src/lib/contexts";
 
 async function connectModel(page: Page, provider: "ChatGPT" | "Claude") {
@@ -117,4 +119,55 @@ test("save references without a model and inspect the exact revision each chat u
   await contextDetails.getByRole("button", { name: "Open latest in Builder" }).click();
   await expect(page.getByRole("textbox", { name: "Goal", exact: true })).toHaveValue("Compare evidence across two product decisions.");
   await expect(page.getByText("Saved · revision 2", { exact: true })).toBeVisible();
+});
+
+test("round-trip a portable brief as a new draft after confirming unsaved edits", async ({ page }) => {
+  const imported = {
+    name: "Portable market brief",
+    goal: "Use the supplied observations to prioritize three ideas.",
+    instructions: "Separate observations from assumptions.",
+    references: "Three interviews identified confusing setup steps.",
+    outputFormat: "A ranked list with one reason per item.",
+  };
+  const file = {
+    name: "market-brief.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ format: "harness.context", version: 1, context: imported })),
+  };
+  await page.goto("/");
+  await page.getByRole("button", { name: /Build a reusable context/ }).click();
+  const builder = page.getByRole("region", { name: "Context builder" });
+  const name = builder.getByRole("textbox", { name: "Name", exact: true });
+  const goal = builder.getByRole("textbox", { name: "Goal", exact: true });
+  const chooser = builder.getByLabel("Import Harness brief file", { exact: true });
+  const exportBrief = builder.getByRole("button", { name: "Export brief", exact: true });
+  await expect(exportBrief).toBeDisabled();
+  await name.fill("My current draft");
+  await goal.fill("Keep this goal while an import is pending.");
+
+  await chooser.setInputFiles({ ...file, buffer: Buffer.from("{broken") });
+  await expect(builder.getByRole("alert")).toBeVisible();
+  await expect(name).toHaveValue("My current draft");
+
+  await chooser.setInputFiles(file);
+  const confirmation = builder.getByRole("group", { name: "Discard unsaved edits?" });
+  await expect(confirmation.getByRole("button", { name: "Keep editing" })).toBeFocused();
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
+  await expect(goal).toHaveValue("Keep this goal while an import is pending.");
+
+  await chooser.setInputFiles(file);
+  await confirmation.getByRole("button", { name: "Discard edits and import" }).click();
+  await expect(name).toHaveValue(imported.name);
+  await expect(goal).toHaveValue(imported.goal);
+  await expect(builder.getByRole("textbox", { name: "Instructions", exact: true })).toHaveValue(imported.instructions);
+  await expect(builder.getByRole("textbox", { name: "Reference material", exact: true })).toHaveValue(imported.references);
+  await expect(builder.getByRole("textbox", { name: "Output format", exact: true })).toHaveValue(imported.outputFormat);
+  await expect(builder.getByText("Unsaved changes", { exact: true })).toBeVisible();
+  const downloaded = page.waitForEvent("download");
+  await exportBrief.click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("portable-market-brief.harness.json");
+  const path = await download.path();
+  expect(readPortableContext(await readFile(path, "utf8"))).toEqual(imported);
+  expect(await (await page.request.get("/api/contexts")).json()).toEqual([]);
 });

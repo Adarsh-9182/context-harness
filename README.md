@@ -4,6 +4,8 @@
 
 Harness is a local AI chat app. Connect your **ChatGPT** or **Claude** account and choose from 500 searchable professions or type your own role. Before you start a chat, answer optional questions about your goal, relevant details, and expected output. Harness keeps those answers with the conversation when you switch models.
 
+Use the [web workspace](https://adarshbhardwaj.space/harness/app) to build and save context in your browser. Copy the prompt to ChatGPT or Claude, or export the brief for **Import brief** in local Harness. See the [web workspace guide](docs/WEB-WORKSPACE.md).
+
 ## Build reusable context
 
 Open **Context Builder** to describe what you want the model to do. Give the context a name and a goal, then add any instructions, reference text, and desired output format. For example, a product planner could use a customer interview as reference material and return a prioritized feature brief with open questions.
@@ -33,6 +35,10 @@ Start both provider sign-ins from Harness at the local address above. The ChatGP
 There is no API key entry or alternate provider option. ChatGPT uses the documented Sign in with ChatGPT plan-usage flow, including encrypted session storage, automatic renewal, and session revocation on disconnect. Claude credentials stay with the official client's isolated local profile; Harness does not extract or accept Claude tokens.
 
 Run this version natively on the computer where you sign in. The OAuth callback binds only to `127.0.0.1`; remote/hosted connection attempts are rejected. The existing Docker/hosting configuration is infrastructure scaffolding, not a working account-connection deployment. See [Account connections](docs/ACCOUNT-CONNECTIONS.md) for setup and current boundaries.
+
+## Review video clips
+
+In a local chat with a model that supports images, choose **Attach video**. Harness samples up to four timestamped frames from an MP4, MOV, M4V, or WebM that your browser can play. Ask your Video Editor about visible scenes, composition, or on-screen text. Harness sends and saves the sample sheet with your chat. The original clip and audio stay on your device. If the browser cannot read the clip's codec, try an H.264 MP4 or attach still images.
 
 ## Manage conversations
 

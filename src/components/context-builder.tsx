@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { ArrowLeft, ArrowRight, BookOpen, Check, Layers, Link2, LoaderCircle, Paperclip, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { ArrowLeft, ArrowRight, BookOpen, Check, FileDown, FileUp, Layers, Link2, LoaderCircle, Paperclip, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { createPortableContext, MAX_PORTABLE_CONTEXT_BYTES, readPortableContext } from "@/lib/context-portable.mjs";
 import { appendContextReferences, CONTEXT_REFERENCE_ACCEPT } from "@/lib/context-reference-import";
 import { CONTEXT_LIMITS, type ContextBrief, type ContextInput, type ContextSummary } from "@/lib/contexts";
 import "@/app/context-builder.css";
@@ -34,7 +35,8 @@ type Props = {
   requestedContextId?: string;
 };
 
-type Operation = "opening" | "saving" | "starting" | "importing";
+type Operation = "opening" | "saving" | "starting" | "importing" | "importing-brief";
+type PendingSelection = { kind: "context"; id?: string } | { kind: "brief"; draft: ContextInput };
 
 function contextInput(brief: ContextBrief): ContextInput {
   const { name, goal, instructions, references, outputFormat } = brief;
@@ -54,8 +56,9 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
   const [saved, setSaved] = useState<ContextBrief | null>(null);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [error, setError] = useState("");
+  const [briefError, setBriefError] = useState("");
   const [referenceFeedback, setReferenceFeedback] = useState<{ success: boolean; message: string }>();
-  const [pendingSelection, setPendingSelection] = useState<{ id?: string } | null>(null);
+  const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
   const listRequest = useRef(0);
   const lastLibraryRead = useRef(0);
   const handledRequest = useRef<string | undefined>(undefined);
@@ -63,6 +66,7 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
   const builderHeading = useRef<HTMLHeadingElement>(null);
   const editorHeading = useRef<HTMLHeadingElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
+  const briefInput = useRef<HTMLInputElement>(null);
   const referenceInput = useRef<HTMLInputElement>(null);
   const keepEditingButton = useRef<HTMLButtonElement>(null);
 
@@ -108,6 +112,14 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
   const goalValid = draft.goal.trim().length >= 4;
   const valid = nameValid && goalValid;
   const locked = busy || operation !== null || pendingSelection !== null;
+  const portable = useMemo(() => {
+    if (!valid) return null;
+    try {
+      return createPortableContext(draft);
+    } catch {
+      return null;
+    }
+  }, [draft, valid]);
 
   function changeField(key: keyof ContextInput, value: string) {
     setDraft(previous => ({ ...previous, [key]: value }));
@@ -130,26 +142,35 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
     }
   }, [busy]);
 
-  const showContext = useCallback((id?: string) => {
+  const showNewDraft = useCallback((input: ContextInput) => {
     setPendingSelection(null);
     setError("");
+    setBriefError("");
     setReferenceFeedback(undefined);
+    setSaved(null);
+    setDraft(input);
+    requestAnimationFrame(() => nameInput.current?.focus());
+  }, []);
+
+  const showContext = useCallback((id?: string) => {
     if (!id) {
-      setSaved(null);
-      setDraft(emptyContext);
-      requestAnimationFrame(() => nameInput.current?.focus());
+      showNewDraft(emptyContext);
       return;
     }
+    setPendingSelection(null);
+    setError("");
+    setBriefError("");
+    setReferenceFeedback(undefined);
     void perform("opening", async () => {
       const brief = await request<ContextBrief>(`/api/contexts/${encodeURIComponent(id)}`);
       setSaved(brief);
       setDraft(contextInput(brief));
       requestAnimationFrame(() => editorHeading.current?.focus());
     });
-  }, [perform, request]);
+  }, [perform, request, showNewDraft]);
 
   const selectContext = useCallback((id?: string) => {
-    if (dirty) setPendingSelection({ id });
+    if (dirty) setPendingSelection({ kind: "context", id });
     else showContext(id);
   }, [dirty, showContext]);
 
@@ -177,6 +198,43 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
         setReferenceFeedback({ success: false, message: (cause as Error).message });
       }
     });
+  }
+
+  function importBrief(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (locked || !file) return;
+    setBriefError("");
+    void perform("importing-brief", async () => {
+      try {
+        if (file.size > MAX_PORTABLE_CONTEXT_BYTES) throw new Error("Choose a Harness brief smaller than 128 KB.");
+        const bytes = await file.arrayBuffer();
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        const input = readPortableContext(text);
+        if (dirty) setPendingSelection({ kind: "brief", draft: input });
+        else showNewDraft(input);
+      } catch (cause) {
+        setBriefError((cause as Error).message);
+      }
+    });
+  }
+
+  function exportBrief() {
+    if (locked || !portable) return;
+    setError("");
+    const slug = portable.context.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 64).replace(/^-+|-+$/g, "");
+    const file = new Blob([`${JSON.stringify(portable, null, 2)}\n`], { type: "application/json" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(file);
+    try {
+      link.href = url;
+      link.download = `${slug || "harness-context"}.harness.json`;
+      document.body.append(link);
+      link.click();
+    } finally {
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    }
   }
 
   async function saveDraft(): Promise<ContextBrief> {
@@ -217,10 +275,19 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
         <section className={`context-panel context-library${!libraryLoading && !libraryError && !contexts.length ? " context-library-empty" : ""}`} aria-labelledby="saved-contexts-heading">
           <div className="context-library-heading">
             <h2 id="saved-contexts-heading">Saved contexts</h2>
-            <Button type="button" variant="outline" size="sm" disabled={locked} onClick={() => selectContext()}>
-              <Plus size={14} /> New context
-            </Button>
+            <div className="context-library-actions">
+              <Button type="button" variant="outline" size="sm" disabled={locked} onClick={() => selectContext()}>
+                <Plus size={14} /> New context
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={locked} onClick={() => briefInput.current?.click()}
+                aria-describedby={briefError ? "context-brief-error" : undefined}>
+                <FileUp size={14} /> Import brief
+              </Button>
+              <input ref={briefInput} hidden type="file" accept=".json,application/json" aria-label="Import Harness brief file"
+                disabled={locked} onChange={importBrief} />
+            </div>
           </div>
+          {briefError && <p id="context-brief-error" className="management-error context-brief-error" role="alert">{briefError}</p>}
           {libraryError && (
             <div className="context-library-state">
               <p role="alert">{libraryError}</p>
@@ -254,21 +321,29 @@ export function ContextBuilder({ active, request, onRun, onConnect, onBack, mode
               <h2 id="context-editor-heading" ref={editorHeading} tabIndex={-1}>{saved ? "Edit context" : "New context"}</h2>
               <p>Use the same brief in multiple conversations.</p>
             </div>
-            <div className="context-editor-state" role="status">
-              {operation === "opening" ? "Opening context…" : operation === "saving" ? "Saving…" : operation === "starting" ? "Starting chat…" : operation === "importing" ? "Reading references…" : (
-                dirty ? "Unsaved changes" : saved ? <><Check size={14} /> Saved · revision {saved.revision}</> : null
-              )}
+            <div className="context-editor-tools">
+              <div className="context-editor-state" role="status">
+                {operation === "opening" ? "Opening context…" : operation === "saving" ? "Saving…" : operation === "starting" ? "Starting chat…" : operation === "importing" ? "Reading references…" : operation === "importing-brief" ? "Reading brief…" : (
+                  dirty ? "Unsaved changes" : saved ? <><Check size={14} /> Saved · revision {saved.revision}</> : null
+                )}
+              </div>
+              <Button type="button" variant="outline" size="sm" disabled={locked || !portable} onClick={exportBrief}>
+                <FileDown size={14} /> Export brief
+              </Button>
             </div>
           </div>
           {pendingSelection && (
             <div className="context-editor-alert" role="group" aria-label="Discard unsaved edits?">
-              <p>Switching contexts will discard your unsaved edits.</p>
+              <p>{pendingSelection.kind === "brief" ? "Importing this brief will replace your unsaved edits." : "Switching contexts will discard your unsaved edits."}</p>
               <div>
                 <Button ref={keepEditingButton} type="button" variant="ghost" size="sm" onClick={() => {
                   setPendingSelection(null);
                   requestAnimationFrame(() => editorHeading.current?.focus());
                 }}>Keep editing</Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => showContext(pendingSelection.id)}>Discard edits</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => {
+                  if (pendingSelection.kind === "brief") showNewDraft(pendingSelection.draft);
+                  else showContext(pendingSelection.id);
+                }}>{pendingSelection.kind === "brief" ? "Discard edits and import" : "Discard edits"}</Button>
               </div>
             </div>
           )}

@@ -4,9 +4,10 @@ The [web app](https://context-harness-web.vercel.app/) uses the same Harness int
 
 ## Link your workspace
 
-1. Run Harness on the same computer with `npm start` and open `http://127.0.0.1:4318/`. Connect ChatGPT or Claude from **Your models**.
+1. Run Harness on the same computer with `npm start`.
 2. In the web app, choose **Connect a model → Link local Harness**. Choose **Allow access** in the local window, then return to the web tab.
-3. Keep the link window open. Close it or choose **Unlink local Harness** when you're done. If you just connected another account locally, choose **Refresh models** in the web app.
+3. If an account isn't connected yet, choose **Connect with ChatGPT** or **Connect with Claude** and finish sign-in in local Harness. Return to the web tab to load the models. **Refresh models** is available if you return before sign-in completes.
+4. Keep the link window open. Close it or choose **Unlink local Harness** when you're done.
 
 During an approved link, the web tab requests workspace data through the local window. Provider sign-in, credentials, model requests, and linked conversation storage stay with local Harness. The link ends when either tab closes. The hosted app serves the interface and its static assets.
 

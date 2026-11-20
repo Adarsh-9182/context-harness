@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, ExternalLink, Link2, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -17,6 +17,22 @@ export function WebConnections({ open, onOpenChange, linked, connections, onRefr
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const openedAccountSetup = useRef(false);
+
+  useEffect(() => {
+    if (!linked) {
+      openedAccountSetup.current = false;
+      return;
+    }
+    function refreshAfterSignIn() {
+      if (!openedAccountSetup.current) return;
+      openedAccountSetup.current = false;
+      setError("");
+      void onRefresh().catch((cause: Error) => setError(cause.message));
+    }
+    window.addEventListener("focus", refreshAfterSignIn);
+    return () => window.removeEventListener("focus", refreshAfterSignIn);
+  }, [linked, onRefresh]);
 
   async function connect() {
     setError("");
@@ -39,7 +55,7 @@ export function WebConnections({ open, onOpenChange, linked, connections, onRefr
           <>
             <div className="account-privacy">
               <Link2 size={17} aria-hidden="true" />
-              <p>Start Harness on this computer. Link it here to use its models and conversations. Keep the link window open while you chat.</p>
+              <p>Start Harness on this computer, then link it here. You can sign in to ChatGPT or Claude after linking. Keep the link window open while you chat.</p>
             </div>
             <div className="web-link-actions">
               <Button onClick={() => void connect()} disabled={pending}>
@@ -60,12 +76,14 @@ export function WebConnections({ open, onOpenChange, linked, connections, onRefr
                   <span className={`provider-symbol large ${provider}`} aria-hidden="true">{provider === "chatgpt" ? "◎" : "✳"}</span>
                   <h3>{name}</h3>
                   <p>{connection ? `${connection.models.length} available ${connection.models.length === 1 ? "model" : "models"}` : "Sign in on this computer to use your plan."}</p>
-                  <a className="ui-button button-outline" href={`${LOCAL_HARNESS_ORIGIN}/#connect`} target="_blank" rel="noopener noreferrer">
+                  <a className="ui-button button-outline" href={`${LOCAL_HARNESS_ORIGIN}/#connect`} target="_blank" rel="noopener noreferrer"
+                    onClick={() => { openedAccountSetup.current = true; }}>
                     {connection ? `Manage ${name}` : `Connect with ${name}`} <ExternalLink size={13} />
                   </a>
                 </section>;
               })}
             </div>
+            <p>Finish signing in on this computer, then return to this tab to load your models.</p>
             <div className="web-link-actions">
               <Button size="sm" variant="outline" onClick={() => void connect()} disabled={pending}>{pending ? "Refreshing…" : "Refresh models"}</Button>
               <Button size="sm" variant="ghost" disabled={pending} onClick={() => disconnectLocalHarness()}>Unlink local Harness</Button>
